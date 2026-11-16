@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 底层：深色圆角方形，供不支持自适应图标的启动器使用 -->
+    <path
+        android:fillColor="#1C1C24"
+        android:pathData="M28,0 L80,0 C95.5,0 108,12.5 108,28 L108,80 C108,95.5 95.5,108 80,108 L28,108 C12.5,108 0,95.5 0,80 L0,28 C0,12.5 12.5,0 28,0 Z" />
+    <!-- 黑色外框：完整圆形，比上一版略收，让红圆占比更大 -->
+    <path
+        android:fillColor="#26262F"
+        android:pathData="M54,19.5 C73.05,19.5 88.5,34.95 88.5,54 C88.5,73.05 73.05,88.5 54,88.5 C34.95,88.5 19.5,73.05 19.5,54 C19.5,34.95 34.95,19.5 54,19.5 Z" />
+    <!-- 黑色盘面：与红圆之间只留一圈窄黑环 -->
+    <path
+        android:fillColor="#0D0D14"
+        android:pathData="M54,21.3 C72.06,21.3 86.7,35.94 86.7,54 C86.7,72.06 72.06,86.7 54,86.7 C35.94,86.7 21.3,72.06 21.3,54 C21.3,35.94 35.94,21.3 54,21.3 Z" />
+    <!-- 红底：直径 52 -> 57，中间区域放大约 10% -->
+    <path
+        android:fillColor="#FD3C55"
+        android:pathData="M54,25.5 C69.74,25.5 82.5,38.26 82.5,54 C82.5,69.74 69.74,82.5 54,82.5 C38.26,82.5 25.5,69.74 25.5,54 C25.5,38.26 38.26,25.5 54,25.5 Z" />
+
+    <!-- 白色双音符：随红圆等比放大，保持构图比例 -->
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:scaleX="1.096"
+        android:scaleY="1.096">
+        <!-- 顶部连梁（略带上弧） -->
+        <path
+            android:fillColor="#FFFAFA"
+            android:pathData="M47,44 Q58,40.5 69,40 L69,48 Q58,48.5 47,52 Z" />
+        <!-- 左符干 -->
+        <path
+            android:fillColor="#FFFAFA"
+            android:pathData="M47,44 L50.5,44 L50.5,65.5 L47,65.5 Z" />
+        <!-- 右符干 -->
+        <path
+            android:fillColor="#FFFAFA"
+            android:pathData="M65.5,40 L69,40 L69,62.5 L65.5,62.5 Z" />
+        <!-- 左符头 -->
+        <path
+            android:fillColor="#FFFAFA"
+            android:pathData="M37.5,66 C37.5,63.13 40.41,60.8 44,60.8 C47.59,60.8 50.5,63.13 50.5,66 C50.5,68.87 47.59,71.2 44,71.2 C40.41,71.2 37.5,68.87 37.5,66 Z" />
+        <!-- 右符头 -->
+        <path
+            android:fillColor="#FFFAFA"
+            android:pathData="M56,62.8 C56,59.93 58.91,57.6 62.5,57.6 C66.09,57.6 69,59.93 69,62.8 C69,65.67 66.09,68 62.5,68 C58.91,68 56,65.67 56,62.8 Z" />
+    </group>
+</vector>

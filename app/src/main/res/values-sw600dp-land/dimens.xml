@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 宽屏横屏（含 1024x600 / 1280x720 等基于普通 Android 的车机中控）与 values-car 同一套数值。 -->
+<resources>
+    <dimen name="car_touch_target">64dp</dimen>
+    <dimen name="car_row_height">76dp</dimen>
+    <dimen name="car_row_artwork">60dp</dimen>
+    <dimen name="car_button_small">60dp</dimen>
+    <dimen name="car_button_medium">70dp</dimen>
+    <dimen name="car_button_main">92dp</dimen>
+    <dimen name="car_search_height">60dp</dimen>
+    <dimen name="car_title_size">34sp</dimen>
+    <dimen name="car_lyric_size">26sp</dimen>
+    <dimen name="car_content_max_width">1400dp</dimen>
+    <dimen name="car_list_max_width">1000dp</dimen>
+</resources>

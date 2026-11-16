@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 系统处于深色模式时，启动窗口不使用浅色背景，避免冷启动时白闪。 -->
+    <style name="Theme.NasMusic" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowBackground">@color/window_background_dark</item>
+        <item name="android:navigationBarColor">@color/window_background_dark</item>
+    </style>
+</resources>

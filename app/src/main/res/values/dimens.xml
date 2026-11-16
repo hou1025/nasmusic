@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 手机默认值：车机 / 大屏横屏由 values-car 与 values-sw720dp-land 覆盖。 -->
+<resources>
+    <dimen name="car_touch_target">48dp</dimen>
+    <dimen name="car_row_height">64dp</dimen>
+    <dimen name="car_row_artwork">48dp</dimen>
+    <dimen name="car_button_small">46dp</dimen>
+    <dimen name="car_button_medium">56dp</dimen>
+    <dimen name="car_button_main">76dp</dimen>
+    <dimen name="car_search_height">50dp</dimen>
+    <dimen name="car_title_size">28sp</dimen>
+    <dimen name="car_lyric_size">20sp</dimen>
+    <dimen name="car_content_max_width">4000dp</dimen>
+    <dimen name="car_list_max_width">4000dp</dimen>
+</resources>

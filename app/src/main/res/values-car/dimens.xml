@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android Automotive / UI_MODE_TYPE_CAR：放大触控目标与字号，限制超宽屏内容宽度。 -->
+<resources>
+    <dimen name="car_touch_target">64dp</dimen>
+    <dimen name="car_row_height">76dp</dimen>
+    <dimen name="car_row_artwork">60dp</dimen>
+    <dimen name="car_button_small">60dp</dimen>
+    <dimen name="car_button_medium">70dp</dimen>
+    <dimen name="car_button_main">92dp</dimen>
+    <dimen name="car_search_height">60dp</dimen>
+    <dimen name="car_title_size">34sp</dimen>
+    <dimen name="car_lyric_size">26sp</dimen>
+    <dimen name="car_content_max_width">1400dp</dimen>
+    <dimen name="car_list_max_width">1000dp</dimen>
+</resources>

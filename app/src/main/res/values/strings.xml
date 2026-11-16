@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">音乐</string>
+    <string name="notification_channel">播放控制</string>
+    <string name="permission_title">需要媒体访问权限</string>
+    <string name="permission_body">应用需要读取本机音频文件才能建立音乐库；通知权限用于显示常驻播放控制。不会上传任何本地文件。</string>
+    <string name="grant">授予权限</string>
+    <string name="local">本地</string>
+    <string name="nas_smb">NAS · SMB</string>
+    <string name="nas_webdav">NAS · WebDAV</string>
+</resources>

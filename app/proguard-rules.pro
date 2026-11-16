@@ -1,0 +1,5 @@
+-keep class com.nasmusic.player.** { *; }
+-keep class com.hierynomus.** { *; }
+-dontwarn org.slf4j.**
+-dontwarn javax.security.auth.**
+-dontwarn java.time.**
