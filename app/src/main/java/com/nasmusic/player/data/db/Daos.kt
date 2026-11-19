@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -67,6 +68,10 @@ interface SongDao {
     @Query("UPDATE songs SET artworkUri = :uri WHERE id = :id")
     suspend fun setArtworkUri(id: String, uri: String?)
 
+    /** 同一张封面被多首歌复用时，一次批量更新，避免逐首写库。 */
+    @Query("UPDATE songs SET artworkUri = :uri WHERE id IN (:ids)")
+    suspend fun setArtworkUriForIds(ids: List<String>, uri: String?)
+
     @Query("UPDATE songs SET lyricsUri = NULL WHERE lyricsUri LIKE 'file://%'")
     suspend fun clearDownloadedLyrics()
 
@@ -78,6 +83,13 @@ interface SongDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(songs: List<SongEntity>)
+
+    /** 单次事务内替换整个音源曲库：列表只收到一次刷新，避免先清空后写入导致的闪烁/短暂空列表。 */
+    @Transaction
+    suspend fun replaceNasSongs(sourceId: String, songs: List<SongEntity>) {
+        deleteByNasSource(sourceId)
+        upsert(songs)
+    }
 
     @Query("UPDATE songs SET isFavorite = :favorite WHERE id = :id")
     suspend fun setFavorite(id: String, favorite: Boolean)

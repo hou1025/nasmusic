@@ -279,9 +279,13 @@ private fun GroupedSongList(
     }
     val network = songs.filter { it.isNas }
     val local = songs.filter { !it.isNas }
+    // 是否存在网络源歌曲决定是否分组：
+    // - 有网络源：显示「网络音乐源」+「本地音乐」两个分区标题，各自成队列；
+    // - 无网络源：不显示任何分区标题，本地歌曲直接平铺成一个队列。
+    val hasNetwork = network.isNotEmpty()
 
     LazyColumn(modifier) {
-        if (network.isNotEmpty()) {
+        if (hasNetwork) {
             item(key = "header_network") { SectionHeader("网络音乐源", network.size) }
             items(network, key = { it.id }) { song ->
                 SongRow(
@@ -297,23 +301,22 @@ private fun GroupedSongList(
                     }
                 )
             }
+            item(key = "header_local") { SectionHeader("本地音乐", local.size) }
         }
-        if (local.isNotEmpty()) {
-            item(key = "header_local") { SectionHeader("本地歌曲", local.size) }
-            items(local, key = { it.id }) { song ->
-                SongRow(
-                    song = song,
-                    playing = state.currentSong?.id == song.id,
-                    onClick = { playerVm.playSongs(local, local.indexOf(song)) },
-                    trailing = {
-                        SongOptionsMenu(
-                            vm = vm, playerVm = playerVm, song = song,
-                            onAddToPlaylist = { onAddToPlaylist(song) },
-                            onEditTags = { onEditTags(song) }
-                        )
-                    }
-                )
-            }
+        val localQueue = if (hasNetwork) local else songs
+        items(localQueue, key = { it.id }) { song ->
+            SongRow(
+                song = song,
+                playing = state.currentSong?.id == song.id,
+                onClick = { playerVm.playSongs(localQueue, localQueue.indexOf(song)) },
+                trailing = {
+                    SongOptionsMenu(
+                        vm = vm, playerVm = playerVm, song = song,
+                        onAddToPlaylist = { onAddToPlaylist(song) },
+                        onEditTags = { onEditTags(song) }
+                    )
+                }
+            )
         }
     }
 }

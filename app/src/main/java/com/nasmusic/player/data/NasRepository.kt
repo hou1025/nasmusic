@@ -58,6 +58,19 @@ class NasRepository(
         if (songs.isNotEmpty()) songDao.upsert(songs.map { it.toEntity() })
     }
 
+    /** 事务内一次性替换音源曲库，列表只刷新一次。 */
+    suspend fun replaceNasSongs(sourceId: String, songs: List<Song>) = withContext(Dispatchers.IO) {
+        songDao.replaceNasSongs(sourceId, songs.map { it.toEntity() })
+    }
+
+    /** 封面下载完成后按歌曲 id 批量回填 artworkUri（key=本地封面 uri，value=歌曲 id 列表）。 */
+    suspend fun updateArtworkBatches(batches: Map<String, List<String>>) =
+        withContext(Dispatchers.IO) {
+            for ((uri, ids) in batches) {
+                if (ids.isNotEmpty()) songDao.setArtworkUriForIds(ids, uri)
+            }
+        }
+
     suspend fun configFor(id: String): NasConfig? = withContext(Dispatchers.IO) {
         sourceDao.get(id)?.toModel()?.toConfig()
     }

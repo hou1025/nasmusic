@@ -25,6 +25,7 @@ import com.nasmusic.player.data.LyricsSource
 import com.nasmusic.player.data.NasRandomAccessReader
 import com.nasmusic.player.data.TagReader
 import com.nasmusic.player.playback.PlaybackUiState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -234,6 +235,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val count = runCatching {
                 container.nasScanner.scan(source) { progress -> _scan.value = progress }
             }.getOrElse { e ->
+                // 协程取消（用户点「取消扫描」、或被下一次扫描的 scanJob.cancel() 顶替）不是失败。
+                // runCatching 会连 CancellationException 一起捕获，必须单独排除，
+                // 否则会把正常的取消误报成「扫描失败：StandaloneCoroutine was cancelled」。
+                if (e is CancellationException) return@launch
                 // 保留异常类型和原始消息，避免空消息异常只显示「扫描失败」而无法定位
                 val detail = friendlyError(e, "")
                     .ifBlank { e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName }

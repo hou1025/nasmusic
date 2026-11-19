@@ -237,41 +237,14 @@ class NasScanner(
                 page++
             }
 
-            onProgress(ScanProgress(true, source.id, 0, allTracks.size, "", "正在同步封面"))
-
-            // 已有封面的曲目直接复用本地文件；封面 ID 去重后小并发下载
-            val neededCovers = LinkedHashSet<String>()
-            for (track in allTracks) {
-                val old = existing["nas:${source.id}:${track.guid}"]
-                if (track.coverId.isNotBlank() && old?.artworkUri.isNullOrBlank() &&
-                    neededCovers.size < 300
-                ) {
-                    neededCovers += track.coverId
-                }
-            }
-            // 封面失败时 uri 为 null；ConcurrentHashMap 禁止 null value，写入会抛无消息 NPE 导致整个扫描失败
-            val coverCache = HashMap<String, String>()
-            coroutineScope {
-                neededCovers.chunked(8).forEach { batch ->
-                    batch.map { coverId ->
-                        async(Dispatchers.IO) {
-                            coverId to runCatching {
-                                api.coverBytes(coverId)?.let { saveCover("fnos:$coverId", it) }
-                            }.getOrNull()
-                        }
-                    }.awaitAll().forEach { (coverId, uri) ->
-                        if (uri != null) coverCache[coverId] = uri
-                    }
-                    currentCoroutineContext().ensureActive()
-                }
-            }
-
+            // 先把元数据立即入库：列表无需等待封面网络请求即可显示歌曲。
+            // 封面改为入库后批量回填，且只更新 artworkUri 一列，不重写整首歌。
             val songs = mutableListOf<Song>()
+            val coverIdToSongIds = HashMap<String, MutableList<String>>()
             for (track in allTracks) {
                 currentCoroutineContext().ensureActive()
                 val id = "nas:${source.id}:${track.guid}"
                 val old = existing[id]
-                val cover = track.coverId.takeIf { it.isNotBlank() }?.let { coverCache[it] }
                 val song = Song(
                     id = id,
                     title = track.title,
@@ -282,19 +255,58 @@ class NasScanner(
                     durationMs = track.durationMs,
                     sourceId = source.id,
                     folder = track.album.ifBlank { source.name },
-                    artworkUri = cover ?: old?.artworkUri,
+                    artworkUri = old?.artworkUri,
                     lyricsUri = old?.lyricsUri,
                     sizeBytes = track.sizeBytes,
                     lastModified = old?.lastModified ?: 0L,
                     mimeType = track.mimeType,
                     isFavorite = old?.isFavorite ?: false
                 )
-                if (song.isAllowedBy(filter)) songs += song
+                if (song.isAllowedBy(filter)) {
+                    songs += song
+                    // 记录需要补封面的歌曲（本地还没有封面），按 coverId 归组
+                    if (track.coverId.isNotBlank() && old?.artworkUri.isNullOrBlank()) {
+                        coverIdToSongIds.getOrPut(track.coverId) { ArrayList() } += id
+                    }
+                }
             }
 
-            songDao.deleteByNasSource(source.id)
-            nasRepository.upsertSongs(songs)
+            // 事务内一次性替换曲库：列表只刷新一次，歌曲立刻可见。
+            nasRepository.replaceNasSongs(source.id, songs)
             nasRepository.updateScanTime(source.id)
+            onProgress(
+                ScanProgress(
+                    false, source.id, songs.size, songs.size, "",
+                    "已载入 ${songs.size} 首，正在补充封面…"
+                )
+            )
+
+            // 封面下载放到歌曲入库之后：即使中继慢/失败，也不影响列表已可见。
+            val neededCovers = coverIdToSongIds.keys.take(300)
+            if (neededCovers.isNotEmpty()) {
+                val coverCache = HashMap<String, String>() // 仅存成功结果，避免 null value 触发 NPE
+                coroutineScope {
+                    neededCovers.chunked(8).forEach { batch ->
+                        batch.map { coverId ->
+                            async(Dispatchers.IO) {
+                                coverId to runCatching {
+                                    api.coverBytes(coverId)?.let { saveCover("fnos:$coverId", it) }
+                                }.getOrNull()
+                            }
+                        }.awaitAll().forEach { (coverId, uri) ->
+                            if (uri != null) coverCache[coverId] = uri
+                        }
+                        currentCoroutineContext().ensureActive()
+                    }
+                }
+                // 把 coverId -> 本地 uri 转成 本地 uri -> 歌曲 ids，逐批更新
+                val batches = HashMap<String, List<String>>()
+                for ((coverId, uri) in coverCache) {
+                    coverIdToSongIds[coverId]?.let { batches[uri] = it }
+                }
+                nasRepository.updateArtworkBatches(batches)
+            }
+
             onProgress(
                 ScanProgress(
                     false, source.id, songs.size, songs.size, "",
