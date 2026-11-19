@@ -218,8 +218,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun deleteNasSource(id: String) {
         viewModelScope.launch {
-            container.nasRepository.delete(id)
-            emit("网络音乐源已删除")
+            runCatching { container.nasRepository.delete(id) }
+                .onFailure { emit("删除失败：${friendlyError(it)}"); return@launch }
+            // 清掉播放队列里属于该源的曲目，避免继续播放已失效的地址
+            container.playbackController.removeBySourceId(id)
+            FnosSession.remove(id)
+            emit("网络音乐源及曲库已删除")
         }
     }
 

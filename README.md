@@ -1,7 +1,7 @@
 # NasMusic · 无广告的本地音乐 + NAS + 飞牛音乐播放器
 
 > 轻量、**无广告**的 Android 音乐播放器，统一管理**本地音乐**、**NAS（SMB / WebDAV）**与**飞牛音乐（fnOS）**曲库。
-> 当前版本：`v1.9.3`（versionCode 19） · `com.nasmusic.player` · minSdk 24 / targetSdk 35
+> 当前版本：`v1.9.4`（versionCode 20） · `com.nasmusic.player` · minSdk 24 / targetSdk 35
 
 ---
 
@@ -120,7 +120,13 @@ payloadHash = GET  : md5(按 key 排序并解码后的 query)
 
 ## 4. 变更日志
 
-### v1.9.3（当前）
+### v1.9.4（当前）
+- **歌曲列表分区显示**：歌曲 Tab 内拆分为「网络音乐源」与「本地歌曲」两段，各自独立成队列播放；网络源与本地歌曲不再混在一起。
+- 修复关闭/删除 NAS（SMB/WebDAV）或飞牛音乐后，旧歌曲仍残留在列表中的问题：列表查询与音源表联动，删除音源时同步清理歌单引用、歌曲与播放队列，Room Flow 自动刷新。
+- 修复网络歌曲播放结束后不自动播放下一曲：网络流读到尾部时修正剩余字节数，正确向 Media3 发出 EOF 信号。
+- 同步版本与文档至 v1.9.4。
+
+### v1.9.3
 - 修复扫描封面下载失败时写入 `ConcurrentHashMap` 的 null value 导致的无消息 `NullPointerException`（远程中继限速时更容易触发）→ 改用普通 `HashMap`，失败封面跳过，不影响歌曲入库。
 - 修正折叠对象：「已排除的文件夹（N）」列表现在默认收起，点标题行或箭头展开/收起；「从音乐库中选择要排除并移除的文件夹」同样默认折叠。
 
@@ -169,7 +175,12 @@ payloadHash = GET  : md5(按 key 排序并解码后的 query)
 | `ui/NasScreens.kt` | 网络音乐源页增加飞牛登录入口与 FNOS 卡片，支持重新登录 |
 | `ui/AppNav.kt` | 增加 `fnosLogin` 路由与登录页组合 |
 | `ui/SettingsScreen.kt` | 两个文件夹列表默认折叠，点击标题展开/收起 |
-| `app/build.gradle.kts` | versionCode 15 → 19，versionName 1.8.0 → 1.9.3 |
+| `ui/LibraryScreen.kt` | 歌曲 Tab 分区为「网络音乐源 / 本地歌曲」两段（`GroupedSongList`），各段独立队列播放 |
+| `data/db/Daos.kt` | 列表/搜索查询过滤已删除音源的歌曲；新增按 sourceId 清理歌单引用的方法 |
+| `data/NasRepository.kt` | 删除音源时先清歌单引用、再删歌曲、再删音源 |
+| `playback/PlaybackController.kt` | 新增 `removeBySourceId` 清理播放队列 |
+| `core/AppContainer.kt` | `NasRepository` 构造参数适配 |
+| `app/build.gradle.kts` | versionCode 19 → 20，versionName 1.9.3 → 1.9.4 |
 
 ---
 
@@ -185,7 +196,7 @@ export ANDROID_HOME=/path/to/android-sdk
 
 输出：`app/build/outputs/apk/debug/app-debug.apk`
 
-已验证：`assembleDebug` **BUILD SUCCESSFUL**；`aapt2 dump badging` 确认 `versionCode=19 / versionName=1.9.3`；DEX 内核对了飞牛相关功能字符串。
+已验证：`assembleDebug` **BUILD SUCCESSFUL**；`aapt2 dump badging` 确认 `versionCode=20 / versionName=1.9.4`；DEX 内核对了飞牛相关功能字符串。
 
 ---
 

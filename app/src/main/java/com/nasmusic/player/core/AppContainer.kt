@@ -25,7 +25,7 @@ class AppContainer(private val appContext: Context) {
     val musicRepository by lazy { MusicRepository(appContext, database.songDao(), settings) }
     val playlistRepository by lazy { PlaylistRepository(database.playlistDao()) }
     val nasRepository by lazy {
-        NasRepository(appContext, database.nasSourceDao(), database.songDao(), crypto)
+        NasRepository(appContext, database.nasSourceDao(), database.songDao(), database.playlistDao(), crypto)
     }
     val nasCache by lazy { NasCacheManager(appContext, settings, nasRepository) }
     val nasScanner by lazy { NasScanner(appContext, nasRepository, database.songDao(), settings) }

@@ -33,6 +33,9 @@ class NasDataSource(private val nasRepository: NasRepository) : BaseDataSource(t
     private var currentPosition = 0L
     private var bytesRemaining = 0L
     private var opened = false
+    // 上游返回过真实 EOF 后置位：即使长度未知（bytesRemaining 为 Long.MAX_VALUE），
+    // 下一次读取也立即结束，让 Media3 触发 STATE_ENDED 并自动切下一曲。
+    private var reachedEof = false
 
     // 顺序预读缓冲：ahead[aheadPos until aheadLength) 对应文件 [aheadStart, …)
     private val ahead = ByteArray(READ_AHEAD_BYTES)
@@ -66,6 +69,7 @@ class NasDataSource(private val nasRepository: NasRepository) : BaseDataSource(t
         dataSpec = spec
         aheadLength = 0
         aheadPos = 0
+        reachedEof = false
         opened = true
         transferStarted(spec)
         return if (unknownLength && unbounded) C.LENGTH_UNSET.toLong() else requested
@@ -73,7 +77,7 @@ class NasDataSource(private val nasRepository: NasRepository) : BaseDataSource(t
 
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
         if (length == 0) return 0
-        if (bytesRemaining == 0L) return C.RESULT_END_OF_INPUT
+        if (reachedEof || bytesRemaining == 0L) return C.RESULT_END_OF_INPUT
         val source = access ?: throw IOException("NAS 数据源尚未打开")
         val wanted = min(length.toLong(), bytesRemaining).toInt()
 
@@ -83,7 +87,15 @@ class NasDataSource(private val nasRepository: NasRepository) : BaseDataSource(t
         ) {
             val chunk = min(READ_AHEAD_BYTES.toLong(), bytesRemaining).toInt()
             val filled = source.readAt(currentPosition, ahead, 0, chunk)
-            if (filled <= 0) return C.RESULT_END_OF_INPUT
+            if (filled <= 0) {
+                reachedEof = true
+                return C.RESULT_END_OF_INPUT
+            }
+            // 上游返回的字节数少于请求量（HTTP Range 到文件尾的正常表现）：
+            // 把剩余量修正为实际读到的字节数。长度未知（bytesRemaining 为 MAX_VALUE）时，
+            // 这样读完这批 bytesRemaining 归零，Media3 才能收到 EOF、触发 STATE_ENDED
+            // 并自动切下一曲；否则会当成无限流永远播不完。
+            if (filled < chunk) bytesRemaining = filled.toLong()
             aheadStart = currentPosition
             aheadLength = filled
             aheadPos = 0

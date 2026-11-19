@@ -8,13 +8,22 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface SongDao {
-    @Query("SELECT * FROM songs ORDER BY title COLLATE NOCASE ASC")
+    // 本地歌曲始终显示；NAS 歌曲仅在其音乐源仍存在时显示。
+    // 删除网络源后，属于该源的歌曲立即从列表消失，无需手动刷新或重新扫描。
+    // 子查询引用 nas_sources，Room 会追踪该表变化并自动重新发射。
+    @Query(
+        "SELECT * FROM songs WHERE sourceType = 'LOCAL' " +
+            "OR sourceId IN (SELECT id FROM nas_sources) " +
+            "ORDER BY title COLLATE NOCASE ASC"
+    )
     fun all(): Flow<List<SongEntity>>
 
     @Query(
-        "SELECT * FROM songs WHERE title LIKE '%' || :q || '%' " +
+        "SELECT * FROM songs WHERE (sourceType = 'LOCAL' " +
+            "OR sourceId IN (SELECT id FROM nas_sources)) " +
+            "AND (title LIKE '%' || :q || '%' " +
             "OR artist LIKE '%' || :q || '%' OR album LIKE '%' || :q || '%' " +
-            "OR folder LIKE '%' || :q || '%' OR uri LIKE '%' || :q || '%' " +
+            "OR folder LIKE '%' || :q || '%' OR uri LIKE '%' || :q || '%') " +
             "ORDER BY title COLLATE NOCASE ASC"
     )
     fun search(q: String): Flow<List<SongEntity>>
@@ -129,6 +138,10 @@ interface PlaylistDao {
 
     @Query("DELETE FROM playlist_songs WHERE playlistId = :id")
     suspend fun clearSongs(id: String)
+
+    /** 删除网络源时，清理歌单里指向该源歌曲的引用，避免残留失效条目。 */
+    @Query("DELETE FROM playlist_songs WHERE songId IN (SELECT id FROM songs WHERE sourceId = :sourceId)")
+    suspend fun deletePlaylistRefsByNasSource(sourceId: String)
 
     @Query("DELETE FROM playlists WHERE id = :id")
     suspend fun deletePlaylist(id: String)

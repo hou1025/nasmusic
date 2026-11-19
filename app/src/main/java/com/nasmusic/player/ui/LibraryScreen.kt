@@ -218,7 +218,7 @@ fun LibraryScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavControll
                 modifier = Modifier.weight(1f),
                 emptyText = "还没有收藏歌曲"
             )
-            else -> SongList(
+            else -> GroupedSongList(
                 songs = songs,
                 state = state,
                 vm = vm,
@@ -257,6 +257,86 @@ fun LibraryScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavControll
                 TextButton(onClick = { excludeTarget = null }) { Text("取消") }
             }
         )
+    }
+}
+
+/** 「歌曲」Tab：把网络源歌曲与本地歌曲分区展示，各自成队列、带来源标签。 */
+@Composable
+private fun GroupedSongList(
+    songs: List<Song>,
+    state: PlaybackUiState,
+    vm: MainViewModel,
+    playerVm: PlayerViewModel,
+    onAddToPlaylist: (Song) -> Unit,
+    onEditTags: (Song) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    if (songs.isEmpty()) {
+        Box(modifier, contentAlignment = Alignment.Center) {
+            EmptyState("暂无歌曲，请先扫描本地音乐或添加 NAS 音乐源")
+        }
+        return
+    }
+    val network = songs.filter { it.isNas }
+    val local = songs.filter { !it.isNas }
+
+    LazyColumn(modifier) {
+        if (network.isNotEmpty()) {
+            item(key = "header_network") { SectionHeader("网络音乐源", network.size) }
+            items(network, key = { it.id }) { song ->
+                SongRow(
+                    song = song,
+                    playing = state.currentSong?.id == song.id,
+                    onClick = { playerVm.playSongs(network, network.indexOf(song)) },
+                    trailing = {
+                        SongOptionsMenu(
+                            vm = vm, playerVm = playerVm, song = song,
+                            onAddToPlaylist = { onAddToPlaylist(song) },
+                            onEditTags = { onEditTags(song) }
+                        )
+                    }
+                )
+            }
+        }
+        if (local.isNotEmpty()) {
+            item(key = "header_local") { SectionHeader("本地歌曲", local.size) }
+            items(local, key = { it.id }) { song ->
+                SongRow(
+                    song = song,
+                    playing = state.currentSong?.id == song.id,
+                    onClick = { playerVm.playSongs(local, local.indexOf(song)) },
+                    trailing = {
+                        SongOptionsMenu(
+                            vm = vm, playerVm = playerVm, song = song,
+                            onAddToPlaylist = { onAddToPlaylist(song) },
+                            onEditTags = { onEditTags(song) }
+                        )
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SectionHeader(title: String, count: Int) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.primaryContainer
+        ) {
+            Text(
+                "$title · $count 首",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+            )
+        }
     }
 }
 

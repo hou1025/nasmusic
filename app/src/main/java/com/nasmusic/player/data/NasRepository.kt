@@ -6,6 +6,7 @@ import com.nasmusic.player.core.NasSource
 import com.nasmusic.player.core.Song
 import com.nasmusic.player.core.parseNasUri
 import com.nasmusic.player.data.db.NasSourceDao
+import com.nasmusic.player.data.db.PlaylistDao
 import com.nasmusic.player.data.db.SongDao
 import com.nasmusic.player.data.db.toEntity
 import com.nasmusic.player.data.db.toModel
@@ -22,6 +23,7 @@ class NasRepository(
     private val context: Context,
     private val sourceDao: NasSourceDao,
     private val songDao: SongDao,
+    private val playlistDao: PlaylistDao,
     private val crypto: NasCredentialsCrypto
 ) {
     val sources: Flow<List<NasSource>> = sourceDao.all().map { it.map { e -> e.toModel() } }
@@ -37,8 +39,11 @@ class NasRepository(
     }
 
     suspend fun delete(id: String) = withContext(Dispatchers.IO) {
-        sourceDao.delete(id)
+        // 顺序：先清歌单引用与歌曲，再删源。列表查询按 nas_sources 过滤，
+        // 源删掉后 Room 会自动重新发射，歌曲从「所有列表」即时消失。
+        playlistDao.deletePlaylistRefsByNasSource(id)
         songDao.deleteByNasSource(id)
+        sourceDao.delete(id)
     }
 
     suspend fun updateScanTime(id: String) = withContext(Dispatchers.IO) {

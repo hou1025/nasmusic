@@ -220,4 +220,25 @@ class PlaybackController(
         controller?.stop()
         publish()
     }
+
+    /**
+     * 删除网络音乐源后调用：移除队列中属于该源（mediaId 以 nas:<sourceId>: 开头）的曲目，
+     * 若正在播放的歌也被移除则停止播放，避免继续读取已失效的源。
+     */
+    fun removeBySourceId(sourceId: String) {
+        val c = controller ?: return
+        val prefix = "nas:$sourceId:"
+        val keep = (0 until c.mediaItemCount).map { c.getMediaItemAt(it) }
+            .filterNot { it.mediaId?.startsWith(prefix) == true }
+        val currentId = c.currentMediaItem?.mediaId
+        val removedCurrent = currentId?.startsWith(prefix) == true
+        c.setMediaItems(keep, 0, C.TIME_UNSET)
+        if (removedCurrent || keep.isEmpty()) {
+            c.stop()
+        }
+        currentSongId = null
+        refreshCurrentSong()
+        refreshQueue()
+        publish()
+    }
 }
