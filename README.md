@@ -1,7 +1,7 @@
 # NasMusic · 无广告的本地音乐 + NAS + 飞牛音乐播放器
 
 > 轻量、**无广告**的 Android 音乐播放器，统一管理**本地音乐**、**NAS（SMB / WebDAV）**与**飞牛音乐（fnOS）**曲库。
-> 当前版本：`v1.9.5`（versionCode 21） · `com.nasmusic.player` · minSdk 24 / targetSdk 35
+> 当前版本：`v1.9.6`（versionCode 22） · `com.nasmusic.player` · minSdk 24 / targetSdk 35
 
 ---
 
@@ -120,7 +120,11 @@ payloadHash = GET  : md5(按 key 排序并解码后的 query)
 
 ## 4. 变更日志
 
-### v1.9.5（当前）
+### v1.9.6（当前）
+- **歌曲 Tab 来源筛选改为可点击切换栏**：在原分区标题那一行放置「全部 / 网络音乐源 / 本地音乐」三个选项，可点击切换；选「网络音乐源」只看网络歌曲，选「本地音乐」只看本地歌曲。
+- **只有本地音乐（无网络源）时，整行筛选栏不显示**，本地歌曲直接平铺。
+
+### v1.9.5
 - **修复扫描时误报「扫描失败：StandaloneCoroutine was cancelled」**：`runCatching` 会连协程取消异常一起捕获，导致点「取消扫描」或被新扫描顶替时把正常的取消误报成失败。现在单独识别 `CancellationException` 并静默退出，取消状态正确保留。
 - **大幅缩短网络曲库载入列表的时间**：飞牛扫描改为「元数据先入库 → 列表立即可见 → 封面后台批量回填」。原先要等全部封面下载完才写库，1602 首歌要等很久才能出现在列表；现在几秒内歌曲即可显示，封面下载失败也不影响列表。
 - 入库改用 Room 事务一次性替换整源曲库，列表只刷新一次，避免先清空后写入造成的闪烁/短暂空列表；封面用 `UPDATE ... WHERE id IN` 批量回填，不重写整首歌。
@@ -192,6 +196,7 @@ payloadHash = GET  : md5(按 key 排序并解码后的 query)
 | `data/NasRepository.kt` | 新增事务内整源替换 `replaceNasSongs`、按歌曲 id 批量回填封面 `updateArtworkBatches` |
 | `data/db/Daos.kt` | 新增 `@Transaction replaceNasSongs` 与 `setArtworkUriForIds` 批量更新 |
 | `ui/LibraryScreen.kt` | 分区规则：有网络源显示两组标题，无网络源则平铺本地歌曲、不显示标题 |
+| `ui/LibraryScreen.kt` | v1.9.6：分区标题改为可点击筛选栏（全部/网络/本地），无网络源时不显示筛选栏 |
 
 ---
 
@@ -207,7 +212,7 @@ export ANDROID_HOME=/path/to/android-sdk
 
 输出：`app/build/outputs/apk/debug/app-debug.apk`
 
-已验证：`assembleDebug` **BUILD SUCCESSFUL**；`aapt2 dump badging` 确认 `versionCode=21 / versionName=1.9.5`；DEX 内核对了飞牛相关功能字符串。
+已验证：`assembleDebug` **BUILD SUCCESSFUL**；`aapt2 dump badging` 确认 `versionCode=22 / versionName=1.9.6`；DEX 内核对了飞牛相关功能字符串。
 
 ---
 
