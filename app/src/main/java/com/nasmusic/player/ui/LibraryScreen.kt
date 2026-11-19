@@ -56,6 +56,8 @@ fun LibraryScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavControll
     val progress by vm.scanProgress.collectAsStateWithLifecycle()
 
     var tab by remember { mutableStateOf(0) }
+    // 歌曲 Tab 的来源筛选：0=全部 1=网络音乐源 2=本地音乐
+    var songFilter by remember { mutableStateOf(0) }
     var group by remember { mutableStateOf<String?>(null) }
     var addTarget by remember { mutableStateOf<Song?>(null) }
     var editTarget by remember { mutableStateOf<Song?>(null) }
@@ -220,6 +222,8 @@ fun LibraryScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavControll
             )
             else -> GroupedSongList(
                 songs = songs,
+                filter = songFilter,
+                onFilterChange = { songFilter = it },
                 state = state,
                 vm = vm,
                 playerVm = playerVm,
@@ -260,10 +264,12 @@ fun LibraryScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavControll
     }
 }
 
-/** 「歌曲」Tab：把网络源歌曲与本地歌曲分区展示，各自成队列、带来源标签。 */
+/** 「歌曲」Tab：顶部来源筛选栏（全部/网络音乐源/本地音乐），可点击切换，列表只显示所选来源。 */
 @Composable
 private fun GroupedSongList(
     songs: List<Song>,
+    filter: Int,
+    onFilterChange: (Int) -> Unit,
     state: PlaybackUiState,
     vm: MainViewModel,
     playerVm: PlayerViewModel,
@@ -279,36 +285,69 @@ private fun GroupedSongList(
     }
     val network = songs.filter { it.isNas }
     val local = songs.filter { !it.isNas }
-    // 是否存在网络源歌曲决定是否分组：
-    // - 有网络源：显示「网络音乐源」+「本地音乐」两个分区标题，各自成队列；
-    // - 无网络源：不显示任何分区标题，本地歌曲直接平铺成一个队列。
     val hasNetwork = network.isNotEmpty()
+    // 没有网络源时强制回到「全部」，不显示筛选栏，本地歌曲平铺。
+    val effectiveFilter = if (!hasNetwork) 0 else filter
+
+    // 当前筛选要展示的队列
+    val shown = when (effectiveFilter) {
+        1 -> network
+        2 -> local
+        else -> songs
+    }
 
     LazyColumn(modifier) {
+        // 筛选栏放在原「网络音乐源」那一行，三个选项排在一起、可点击切换
         if (hasNetwork) {
-            item(key = "header_network") { SectionHeader("网络音乐源", network.size) }
-            items(network, key = { it.id }) { song ->
-                SongRow(
-                    song = song,
-                    playing = state.currentSong?.id == song.id,
-                    onClick = { playerVm.playSongs(network, network.indexOf(song)) },
-                    trailing = {
-                        SongOptionsMenu(
-                            vm = vm, playerVm = playerVm, song = song,
-                            onAddToPlaylist = { onAddToPlaylist(song) },
-                            onEditTags = { onEditTags(song) }
-                        )
+            item(key = "source_filter") {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val options = listOf(0 to "全部", 1 to "网络音乐源", 2 to "本地音乐")
+                    options.forEach { (value, label) ->
+                        val selected = effectiveFilter == value
+                        Surface(
+                            onClick = { onFilterChange(value) },
+                            shape = RoundedCornerShape(20.dp),
+                            color = if (selected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                            contentColor = if (selected) MaterialTheme.colorScheme.onPrimary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(end = 8.dp)
+                        ) {
+                            Text(
+                                label,
+                                style = MaterialTheme.typography.labelLarge,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                            )
+                        }
                     }
-                )
+                }
             }
-            item(key = "header_local") { SectionHeader("本地音乐", local.size) }
         }
-        val localQueue = if (hasNetwork) local else songs
-        items(localQueue, key = { it.id }) { song ->
+        if (shown.isEmpty()) {
+            item(key = "filter_empty") {
+                Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                    Text(
+                        when (effectiveFilter) {
+                            1 -> "暂无网络音乐源歌曲"
+                            2 -> "暂无本地歌曲"
+                            else -> "暂无歌曲"
+                        },
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+        items(shown, key = { it.id }) { song ->
             SongRow(
                 song = song,
                 playing = state.currentSong?.id == song.id,
-                onClick = { playerVm.playSongs(localQueue, localQueue.indexOf(song)) },
+                onClick = { playerVm.playSongs(shown, shown.indexOf(song)) },
                 trailing = {
                     SongOptionsMenu(
                         vm = vm, playerVm = playerVm, song = song,
@@ -316,28 +355,6 @@ private fun GroupedSongList(
                         onEditTags = { onEditTags(song) }
                     )
                 }
-            )
-        }
-    }
-}
-
-@Composable
-private fun SectionHeader(title: String, count: Int) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Surface(
-            shape = RoundedCornerShape(14.dp),
-            color = MaterialTheme.colorScheme.primaryContainer
-        ) {
-            Text(
-                "$title · $count 首",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
             )
         }
     }
