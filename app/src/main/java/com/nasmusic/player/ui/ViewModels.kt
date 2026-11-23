@@ -28,6 +28,8 @@ import com.nasmusic.player.playback.PlaybackUiState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -64,6 +66,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val nasSources = container.nasRepository.sources
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /**
+     * 各网络音源的连接状态：sourceId -> 是否连通。
+     * 进入音乐列表/网络音源页面时探测。断连会静默删除该音源的曲库歌曲（不提示）；
+     * 再次连上则自动重新扫描恢复，整个清空/恢复过程对用户无提示打扰。
+     */
+    private val _nasConnectionStatus = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    val nasConnectionStatus: StateFlow<Map<String, Boolean>> = _nasConnectionStatus.asStateFlow()
+    private var connectionCheckJob: Job? = null
+    // 上一次探测到的连接状态，用于检测「连通→断开」「断开→连通」的翻转；
+    // 只有状态真正变化时才删除/重扫，避免每次进入列表都触发全量扫描。
+    private var previousNasConnection: Map<String, Boolean> = emptyMap()
 
     private val _query = MutableStateFlow("")
     val query: StateFlow<String> = _query.asStateFlow()
@@ -378,6 +392,65 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             runCatching { browser.close() }
         }
     }
+
+    /**
+     * 进入网络音源歌曲列表时调用：逐个探测已保存音源是否可连通，并按连接状态维护曲库。
+     * - 连通 → 该音源歌曲保留/显示；
+     * - 连通→断开（状态翻转）→ 静默删除该音源在曲库中的歌曲、清歌单引用与播放队列，不弹任何提示；
+     * - 断开→连通（状态翻转）→ 自动重新扫描该音源，歌曲重新回到列表，同样无提示。
+     * 状态未变化时不做任何写库/扫描，避免每次进入列表都全量扫描。
+     */
+    fun refreshNasConnections() {
+        connectionCheckJob?.cancel()
+        connectionCheckJob = viewModelScope.launch {
+            val snapshot = nasSources.value.filter { it.type != SourceType.LOCAL }
+            if (snapshot.isEmpty()) {
+                _nasConnectionStatus.value = emptyMap()
+                previousNasConnection = emptyMap()
+                return@launch
+            }
+            // 并发探测，避免某个音源网络超时拖住整个列表
+            val probes = snapshot.map { source ->
+                async(Dispatchers.IO) {
+                    val connected = runCatching {
+                        // 用最短路径做一次真实目录读取，验证网络 + 凭据都可用。
+                        // FNOS 的 listDir 只在根目录真正请求接口，其它路径会直接返回空，
+                        // 因此统一探测根目录，避免「假连通」。
+                        val probePath = if (source.type == SourceType.FNOS) "/" else source.rootPath
+                        browseNas(source.id, probePath)
+                        true
+                    }.getOrDefault(false)
+                    source to connected
+                }
+            }
+            val results = probes.awaitAll()
+            val status = results.associate { (source, connected) -> source.id to connected }
+            _nasConnectionStatus.value = status
+
+            // 只处理状态翻转，避免重复清理/重扫
+            val prev = previousNasConnection
+            for ((source, connected) in results) {
+                // 首次探测（prev 中无记录）只建立基线，不进入删除/重扫分支：
+                // 冷启动或新加源时网络常未就绪，若此时探测失败就删库会造成误删。
+                if (!prev.containsKey(source.id)) continue
+                val wasConnected = prev[source.id] == true
+                if (wasConnected && !connected) {
+                    // 刚刚断开：静默清空该音源曲库，不提示
+                    container.nasRepository.clearSongsFor(source.id)
+                    container.playbackController.removeBySourceId(source.id)
+                    FnosSession.remove(source.id)
+                } else if (!wasConnected && connected) {
+                    // 重新连上：静默重新扫描该音源恢复列表，不提示
+                    runCatching { container.nasScanner.scan(source) { } }
+                }
+            }
+            previousNasConnection = status
+        }
+    }
+
+    /** 某音源当前是否连通；未探测过时默认不显示，避免断网仍展示旧列表。 */
+    fun isNasConnected(sourceId: String): Boolean =
+        _nasConnectionStatus.value[sourceId] == true
 }
 
 class PlayerViewModel(app: Application) : AndroidViewModel(app) {

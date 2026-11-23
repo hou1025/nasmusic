@@ -486,7 +486,7 @@ fun SettingsScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavControl
                 "Kotlin · Compose · MVVM · Room · Media3 · SMBJ · OkHttp",
                 Modifier.padding(top = 4.dp)
             )
-            InfoText("v1.7.0 · 轻量 · 无广告", Modifier.padding(top = 4.dp))
+            InfoText("v2.1.1 · 轻量 · 无广告 · 支持车机/平板双栏", Modifier.padding(top = 4.dp))
         }
         Spacer(Modifier.height(12.dp))
     }

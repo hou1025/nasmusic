@@ -57,11 +57,25 @@ import java.util.UUID
 
 /** 网络源管理内嵌在设置页，不再占用底部导航。 */
 @Composable
-fun NasSourcesSection(vm: MainViewModel, nav: NavController) {
+fun NasSourcesSection(
+    vm: MainViewModel,
+    nav: NavController,
+    onFnosLogin: ((String) -> Unit)? = null,
+    onBrowse: ((String, String) -> Unit)? = null
+) {
     val sources by vm.nasSources.collectAsStateWithLifecycle()
     val progress by vm.scanProgress.collectAsStateWithLifecycle()
     var showAdd by remember { mutableStateOf(false) }
     var editTarget by remember { mutableStateOf<NasSource?>(null) }
+    // 传入内嵌回调时走右栏子页面（左侧播放卡片常驻）；否则保持原整页导航
+    val goFnosLogin: (String) -> Unit = { id ->
+        if (onFnosLogin != null) onFnosLogin(id)
+        else nav.navigate("fnosLogin?sourceId=${Uri.encode(id)}")
+    }
+    val goBrowse: (String, String) -> Unit = { id, path ->
+        if (onBrowse != null) onBrowse(id, path)
+        else nav.navigate(nasBrowserRoute(id, path))
+    }
 
     Column(Modifier.fillMaxWidth()) {
         Row(
@@ -74,7 +88,7 @@ fun NasSourcesSection(vm: MainViewModel, nav: NavController) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.weight(1f)
             )
-            TextButton(onClick = { nav.navigate("fnosLogin?sourceId=") }) {
+            TextButton(onClick = { goFnosLogin("") }) {
                 Icon(Icons.Default.MusicNote, contentDescription = null, modifier = Modifier.size(18.dp))
                 Text(" 飞牛登录")
             }
@@ -114,10 +128,10 @@ fun NasSourcesSection(vm: MainViewModel, nav: NavController) {
                 NasSourceCard(
                     source = source,
                     onScan = { vm.scanNasSource(source) },
-                    onBrowse = { nav.navigate(nasBrowserRoute(source.id, source.rootPath)) },
+                    onBrowse = { goBrowse(source.id, source.rootPath) },
                     onEdit = {
                         if (source.type == SourceType.FNOS) {
-                            nav.navigate("fnosLogin?sourceId=${Uri.encode(source.id)}")
+                            goFnosLogin(source.id)
                         } else editTarget = source
                     },
                     onDelete = {

@@ -106,6 +106,10 @@ interface SongDao {
     @Query("DELETE FROM songs WHERE sourceType = 'LOCAL' AND id LIKE 'doc:%' AND id NOT IN (:ids)")
     suspend fun deleteStaleFolder(ids: List<String>)
 
+    /** 仅清理指定文件夹内已失效的手动导入歌曲，避免影响其它已添加的文件夹。 */
+    @Query("DELETE FROM songs WHERE sourceType = 'LOCAL' AND id LIKE 'doc:%' AND folder = :folder AND id NOT IN (:ids)")
+    suspend fun deleteStaleFolderIn(folder: String, ids: List<String>)
+
     @Query("DELETE FROM songs WHERE sourceId = :sourceId AND sourceType <> 'LOCAL'")
     suspend fun deleteByNasSource(sourceId: String)
 

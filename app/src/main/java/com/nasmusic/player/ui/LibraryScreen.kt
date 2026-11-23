@@ -33,6 +33,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -50,10 +51,24 @@ private val LIBRARY_TABS = listOf("歌曲", "专辑", "歌手", "文件夹", "�
 
 @Composable
 fun LibraryScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavController) {
-    val songs by vm.songs.collectAsStateWithLifecycle()
+    val allSongs by vm.songs.collectAsStateWithLifecycle()
     val favorites by vm.favorites.collectAsStateWithLifecycle()
     val state by playerVm.state.collectAsStateWithLifecycle()
     val progress by vm.scanProgress.collectAsStateWithLifecycle()
+    val connectionStatus by vm.nasConnectionStatus.collectAsStateWithLifecycle()
+
+    // 进入音乐列表时探测各网络音源：连上的显示其歌曲，连不上/失败的清空其歌曲；
+    // 每次进入（含从网络音源页返回、切到「网络音乐源」筛选）都会重新探测，重连后自动恢复。
+    var connectionVersion by remember { mutableStateOf(0) }
+    LaunchedEffect(connectionVersion) { vm.refreshNasConnections() }
+
+    // 只保留已连通音源的网络歌曲；未连通音源的列表清空，避免断网仍显示旧曲目。
+    // 本地歌曲不受影响。探测未完成时 connectionStatus 为空，网络歌曲暂时隐藏。
+    val songs = remember(allSongs, connectionStatus) {
+        allSongs.filter { song ->
+            !song.isNas || connectionStatus[song.sourceId] == true
+        }
+    }
 
     var tab by remember { mutableStateOf(0) }
     // 歌曲 Tab 的来源筛选：0=全部 1=网络音乐源 2=本地音乐
@@ -83,8 +98,8 @@ fun LibraryScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavControll
             if (progress.running) {
                 CircularProgressIndicator(modifier = Modifier.size(20.dp))
             }
-            IconButton(onClick = { vm.scanLocal() }) {
-                Icon(Icons.Default.Refresh, contentDescription = "重新扫描本地音乐")
+            IconButton(onClick = { vm.scanLocal(); connectionVersion++ }) {
+                Icon(Icons.Default.Refresh, contentDescription = "重新扫描并检测网络音源")
             }
             IconButton(onClick = { folderLauncher.launch(null) }) {
                 Icon(Icons.Default.Add, contentDescription = "手动添加音乐文件夹")

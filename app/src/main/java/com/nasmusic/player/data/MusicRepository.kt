@@ -85,7 +85,12 @@ class MusicRepository(
     suspend fun getByIds(ids: List<String>): List<Song> = withContext(Dispatchers.IO) {
         if (ids.isEmpty()) return@withContext emptyList()
         val filter = settings.snapshot().libraryFilter()
-        val map = dao.byIds(ids).associateBy { it.id }
+        // 分批查询：一次性把上千个 id 塞进 IN (:ids) 会超过 SQLite 变量上限
+        // （旧设备为 999），导致播放记忆恢复整段失败。按 500 一批后合并再按原顺序映射。
+        val map = HashMap<String, SongEntity>()
+        for (batch in ids.chunked(500)) {
+            dao.byIds(batch).forEach { map[it.id] = it }
+        }
         ids.mapNotNull { map[it]?.toSong()?.takeIf { song -> song.isAllowedBy(filter) } }
     }
 
@@ -258,7 +263,9 @@ class MusicRepository(
         walk(root)
         if (found.isNotEmpty()) {
             dao.upsert(found)
-            dao.deleteStaleFolder(found.map { it.id })
+            // 按文件夹限定清理范围：只删除当前文件夹内已失效的条目，
+            // 否则添加第二个文件夹会把第一个文件夹导入的歌曲一起删掉。
+            dao.deleteStaleFolderIn(folderName, found.map { it.id })
         }
         purgeFiltered()
         found.size

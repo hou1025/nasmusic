@@ -16,6 +16,7 @@ import com.nasmusic.player.data.MusicRepository
 import com.nasmusic.player.data.NasCacheManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -52,6 +53,14 @@ class PlaybackController(
 
     private var controller: MediaController? = null
     private var currentSongId: String? = null
+    // 冷启动时 Controller 仍在异步连接，期间的用户操作先暂存，连接就绪后按序补发，
+    // 避免"点了没反应"。补发只在主线程执行，与 Controller 回调线程一致。
+    private val pendingActions = mutableListOf<(MediaController) -> Unit>()
+
+    private fun withController(action: (MediaController) -> Unit) {
+        val c = controller
+        if (c != null) action(c) else pendingActions += action
+    }
 
     private val _state = MutableStateFlow(PlaybackUiState())
     val state: StateFlow<PlaybackUiState> = _state.asStateFlow()
@@ -96,6 +105,9 @@ class PlaybackController(
                 if (c != null) {
                     controller = c
                     c.addListener(listener)
+                    // 补发连接前暂存的用户操作
+                    pendingActions.forEach { runCatching { it(c) } }
+                    pendingActions.clear()
                     refreshCurrentSong()
                     refreshQueue()
                     publish()
@@ -137,79 +149,97 @@ class PlaybackController(
         currentSongId = id
         scope.launch {
             val song = id?.let { runCatching { musicRepository.getById(it) }.getOrNull() }
+            // 异步查库期间可能已连续切歌，只有结果仍对应当前曲目才写入，
+            // 否则后到的旧查询会把 currentSong 覆盖成过期歌曲。
+            if (controller?.currentMediaItem?.mediaId != id) return@launch
             _state.value = _state.value.copy(currentSong = song)
             publish()
         }
     }
 
+    private var refreshQueueJob: Job? = null
+
     private fun refreshQueue() {
         val c = controller ?: return
         val ids = (0 until c.mediaItemCount).map { c.getMediaItemAt(it).mediaId }
-        scope.launch {
+        // 取消上一次未完成的队列查询：快速切歌时旧结果后到会把 queue 覆盖成过期列表。
+        refreshQueueJob?.cancel()
+        refreshQueueJob = scope.launch {
             val songs = runCatching { musicRepository.getByIds(ids) }.getOrDefault(emptyList())
+            if (!isActive) return@launch
             _state.value = _state.value.copy(queue = songs)
         }
     }
 
     fun playSongs(songs: List<Song>, startIndex: Int = 0) {
         if (songs.isEmpty()) return
-        val c = controller ?: return
         clearError()
-        val items = songs.map { it.toMediaItem(nasCache.playbackUri(it)) }
-        c.setMediaItems(items, startIndex.coerceIn(0, songs.lastIndex), 0L)
-        c.prepare()
-        c.play()
+        withController { c ->
+            val items = songs.map { it.toMediaItem(nasCache.playbackUri(it)) }
+            c.setMediaItems(items, startIndex.coerceIn(0, songs.lastIndex), 0L)
+            c.prepare()
+            c.play()
+        }
     }
 
     fun playSong(song: Song) = playSongs(listOf(song), 0)
 
     fun addToQueue(songs: List<Song>) {
-        val c = controller ?: return
-        val items = songs.map { it.toMediaItem(nasCache.playbackUri(it)) }
-        c.addMediaItems(items)
+        withController { c ->
+            val items = songs.map { it.toMediaItem(nasCache.playbackUri(it)) }
+            c.addMediaItems(items)
+        }
     }
 
     fun playPause() {
-        val c = controller ?: return
         clearError()
-        if (c.isPlaying) c.pause() else {
-            if (c.mediaItemCount == 0) return
-            c.play()
+        withController { c ->
+            if (c.isPlaying) c.pause() else {
+                if (c.mediaItemCount == 0) return@withController
+                c.play()
+            }
         }
     }
 
-    fun next() = controller?.seekToNextMediaItem()
-    fun previous() = controller?.seekToPreviousMediaItem()
+    fun next() = withController { it.seekToNextMediaItem() }
+    fun previous() = withController { it.seekToPreviousMediaItem() }
 
     fun seekTo(positionMs: Long) {
-        val c = controller ?: return
-        c.seekTo(positionMs.coerceAtLeast(0L))
-        publish()
+        val pos = positionMs.coerceAtLeast(0L)
+        withController { c ->
+            c.seekTo(pos)
+            publish()
+        }
     }
 
-    fun seekBy(deltaMs: Long) = seekTo((controller?.currentPosition ?: 0L) + deltaMs)
+    fun seekBy(deltaMs: Long) {
+        withController { c -> seekTo((c.currentPosition) + deltaMs) }
+    }
 
     fun cycleRepeatMode() {
-        val c = controller ?: return
-        c.repeatMode = when (c.repeatMode) {
-            Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
-            Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
-            else -> Player.REPEAT_MODE_OFF
+        withController { c ->
+            c.repeatMode = when (c.repeatMode) {
+                Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                else -> Player.REPEAT_MODE_OFF
+            }
+            publish()
         }
-        publish()
     }
 
     fun toggleShuffle() {
-        val c = controller ?: return
-        c.shuffleModeEnabled = !c.shuffleModeEnabled
-        publish()
+        withController { c ->
+            c.shuffleModeEnabled = !c.shuffleModeEnabled
+            publish()
+        }
     }
 
     fun retry() {
-        val c = controller ?: return
         clearError()
-        c.prepare()
-        c.play()
+        withController { c ->
+            c.prepare()
+            c.play()
+        }
     }
 
     fun clearError() {
@@ -217,8 +247,10 @@ class PlaybackController(
     }
 
     fun stop() {
-        controller?.stop()
-        publish()
+        withController { c ->
+            c.stop()
+            publish()
+        }
     }
 
     /**
@@ -226,19 +258,20 @@ class PlaybackController(
      * 若正在播放的歌也被移除则停止播放，避免继续读取已失效的源。
      */
     fun removeBySourceId(sourceId: String) {
-        val c = controller ?: return
-        val prefix = "nas:$sourceId:"
-        val keep = (0 until c.mediaItemCount).map { c.getMediaItemAt(it) }
-            .filterNot { it.mediaId?.startsWith(prefix) == true }
-        val currentId = c.currentMediaItem?.mediaId
-        val removedCurrent = currentId?.startsWith(prefix) == true
-        c.setMediaItems(keep, 0, C.TIME_UNSET)
-        if (removedCurrent || keep.isEmpty()) {
-            c.stop()
+        withController { c ->
+            val prefix = "nas:$sourceId:"
+            val keep = (0 until c.mediaItemCount).map { c.getMediaItemAt(it) }
+                .filterNot { it.mediaId?.startsWith(prefix) == true }
+            val currentId = c.currentMediaItem?.mediaId
+            val removedCurrent = currentId?.startsWith(prefix) == true
+            c.setMediaItems(keep, 0, C.TIME_UNSET)
+            if (removedCurrent || keep.isEmpty()) {
+                c.stop()
+            }
+            currentSongId = null
+            refreshCurrentSong()
+            refreshQueue()
+            publish()
         }
-        currentSongId = null
-        refreshCurrentSong()
-        refreshQueue()
-        publish()
     }
 }

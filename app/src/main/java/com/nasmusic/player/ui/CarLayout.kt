@@ -73,6 +73,26 @@ private val WidescreenFallback = CarMetrics(
     textScale = 1.18f
 )
 
+/**
+ * 车机分屏 / 自由窗口下的紧凑尺寸：仍是车机触控目标，但比全屏小一档，
+ * 防止半屏窗口里按钮和列表行被挤出可视区域。
+ */
+private val SplitMetrics = CarMetrics(
+    enabled = true,
+    touchTarget = 52.dp,
+    rowHeight = 68.dp,
+    rowArtwork = 54.dp,
+    buttonSmall = 52.dp,
+    buttonMedium = 62.dp,
+    buttonMain = 78.dp,
+    searchHeight = 54.dp,
+    contentMaxWidth = 1200.dp,
+    listMaxWidth = 900.dp,
+    titleSize = 30.sp,
+    lyricSize = 22.sp,
+    textScale = 1.06f
+)
+
 /** 未进入 NasMusicTheme 时的安全默认值（例如预览）。 */
 val LocalCarMetrics = compositionLocalOf { PhoneMetrics }
 
@@ -96,6 +116,9 @@ fun carMetrics(context: Context): CarMetrics {
     val runtimeCar = uiModeCar || automotive || wideLandscape
     if (runtimeCar && !resourceCar) return WidescreenFallback
     val enabled = resourceCar || runtimeCar
+    // 分屏/自由窗口下 Configuration.screenWidthDp 是「当前窗口」宽度，
+    // 而 smallestScreenWidthDp / uiMode 仍是设备级属性，所以必须单独按窗口宽度降级。
+    if (enabled && cfg.screenWidthDp in 1..599) return SplitMetrics
 
     return CarMetrics(
         enabled = enabled,

@@ -28,7 +28,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 
 /**
@@ -121,14 +120,18 @@ class PlaybackService : MediaSessionService() {
 
     /** 播放记忆：恢复上次队列、播放位置、循环与随机模式。 */
     private fun restoreState(exoPlayer: ExoPlayer) {
-        scope.launch {
-            val settings = runBlocking(Dispatchers.IO) { container.settings.settings.first() }
+        scope.launch(Dispatchers.IO) {
+            // 全部磁盘 IO 放到 IO 线程池挂起执行，不在 Main 上 runBlocking 阻塞启动。
+            val settings = container.settings.settings.first()
             if (!settings.restorePlayback) return@launch
-            val saved = runBlocking(Dispatchers.IO) { container.playbackState.restore() } ?: return@launch
+            val saved = container.playbackState.restore() ?: return@launch
             val songs = container.musicRepository.getByIds(saved.ids)
             if (songs.isEmpty()) return@launch
             val items = songs.map { it.toMediaItem(container.nasCache.playbackUri(it)) }
             withContext(Dispatchers.Main) {
+                // 恢复是异步的：若期间用户已通过控制器点歌（队列已被填充），
+                // 此时再 setMediaItems 会覆盖用户刚发起的播放。跳过恢复，尊重用户操作。
+                if (exoPlayer.mediaItemCount > 0) return@withContext
                 val index = saved.index.coerceIn(0, items.lastIndex.coerceAtLeast(0))
                 exoPlayer.setMediaItems(items, index, saved.positionMs)
                 exoPlayer.repeatMode = saved.repeatMode

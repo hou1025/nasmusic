@@ -46,6 +46,15 @@ class NasRepository(
         sourceDao.delete(id)
     }
 
+    /**
+     * 网络音源断连时的静默清理：彻底删除该音源在曲库中的歌曲及歌单引用，但保留音源配置本身。
+     * 与 delete(id) 的区别是不动 nas_sources 表，重连后可直接重新扫描恢复。
+     */
+    suspend fun clearSongsFor(id: String) = withContext(Dispatchers.IO) {
+        playlistDao.deletePlaylistRefsByNasSource(id)
+        songDao.deleteByNasSource(id)
+    }
+
     suspend fun updateScanTime(id: String) = withContext(Dispatchers.IO) {
         sourceDao.updateScanTime(id, System.currentTimeMillis())
     }

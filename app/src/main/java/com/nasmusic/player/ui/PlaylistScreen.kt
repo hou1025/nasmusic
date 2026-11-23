@@ -34,7 +34,12 @@ import com.nasmusic.player.core.Playlist
 import com.nasmusic.player.core.Song
 
 @Composable
-fun PlaylistScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavController) {
+fun PlaylistScreen(
+    vm: MainViewModel,
+    playerVm: PlayerViewModel,
+    nav: NavController,
+    onOpenPlaylist: ((String) -> Unit)? = null
+) {
     val playlists by vm.playlists.collectAsStateWithLifecycle()
     var showCreate by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<Playlist?>(null) }
@@ -64,7 +69,10 @@ fun PlaylistScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavControl
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { nav.navigate("playlist/${playlist.id}") }
+                            .clickable {
+                                if (onOpenPlaylist != null) onOpenPlaylist(playlist.id)
+                                else nav.navigate("playlist/${playlist.id}")
+                            }
                             .padding(horizontal = 16.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {

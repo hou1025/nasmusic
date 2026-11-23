@@ -158,8 +158,20 @@ class FnosBrowser(private val config: NasConfig) : NasBrowser {
 
     override fun listDir(path: String): List<NasEntry> {
         if (path.trim('/').isNotEmpty()) return emptyList()
-        val (tracks, _) = api.tracks(1, 200)
-        return tracks.map { track ->
+        // 按 total 翻页拉完整个飞牛曲库：只取第一页会漏掉 200 首之后的歌曲，
+        // 导致目录浏览页看不到、也点播不了这些曲目（扫描器已采用同样的翻页策略）。
+        val allTracks = mutableListOf<FnosTrack>()
+        var page = 1
+        var total = -1
+        while (page <= 100) {
+            val (tracks, reportedTotal) = api.tracks(page, 200)
+            if (reportedTotal > 0) total = reportedTotal
+            allTracks.addAll(tracks)
+            if (tracks.isEmpty()) break
+            if (total > 0 && page * 200 >= total) break
+            page++
+        }
+        return allTracks.map { track ->
             val name = track.fileName.substringAfterLast('/').takeIf { it.isNotBlank() }
                 ?: "${track.title}.mp3"
             NasEntry(

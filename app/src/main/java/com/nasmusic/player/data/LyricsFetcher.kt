@@ -126,8 +126,10 @@ class LyricsFetcher {
                 channel.send(searchOne(source, query, artist, allowBreaker = sources.size > 1))
             }
         }
-        val collected = withTimeoutOrNull(FAST_TIMEOUT_MS) {
-            var acc = emptyList<LyricCandidate>()
+        // acc 提到超时块外：超时只应停止"继续等待剩余源"，不能丢掉已经收到的候选，
+        // 否则慢源超时时快源已返回的结果会被 ?: emptyList() 全部抹掉。
+        var acc = emptyList<LyricCandidate>()
+        withTimeoutOrNull(FAST_TIMEOUT_MS) {
             for (i in sources.indices) {
                 val list = channel.receive()
                 if (list.isNotEmpty()) {
@@ -135,8 +137,8 @@ class LyricsFetcher {
                     if (acc.any { score(it, query, artist, durationSec) >= MATCH_THRESHOLD }) break
                 }
             }
-            acc
-        } ?: emptyList()
+        }
+        val collected = acc
         jobs.forEach { runCatching { it.cancel() } }
         channel.close()
 

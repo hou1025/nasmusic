@@ -153,9 +153,9 @@ class NasScanner(
                     }
                 }
 
-                // 先删除旧索引再整体写回，可正确移除 NAS 上已删除的文件；收藏状态已在上面保留
-                songDao.deleteByNasSource(source.id)
-                nasRepository.upsertSongs(finalSongs)
+                // 事务内一次性替换：既移除 NAS 上已删除的文件，又避免先清空后写入导致的
+                // 列表空窗闪烁与中途崩溃丢库；收藏状态已在上面保留。
+                nasRepository.replaceNasSongs(source.id, finalSongs)
                 nasRepository.updateScanTime(source.id)
                 onProgress(
                     ScanProgress(

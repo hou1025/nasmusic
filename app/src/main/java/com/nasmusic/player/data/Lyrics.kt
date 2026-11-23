@@ -37,7 +37,9 @@ object LrcParser {
         for (raw in text.lines()) {
             val line = raw.trim()
             if (line.startsWith("[offset:", true)) {
-                offsetMs = line.removePrefix("[offset:").removeSuffix("]").trim().toLongOrNull() ?: 0L
+                // startsWith 忽略大小写，但 removePrefix 大小写敏感：用 substringAfter
+                // 按 ':' 取值，兼容 [OFFSET:+500] / [Offset:500] 等大小写写法。
+                offsetMs = line.substringAfter(':').removeSuffix("]").trim().toLongOrNull() ?: 0L
                 continue
             }
             val matches = TIME.findAll(line).toList()

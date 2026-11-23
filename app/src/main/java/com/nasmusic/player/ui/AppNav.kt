@@ -1,6 +1,7 @@
 package com.nasmusic.player.ui
 
 import android.Manifest
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.BackHandler
@@ -32,10 +33,12 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -81,18 +84,48 @@ fun AppRoot(vm: MainViewModel, openPlayer: Boolean) {
         vm.refreshPermissions()
         permissionLauncher.launch(permissions)
     }
+    val backStackEntry by nav.currentBackStackEntryAsState()
+    val route = backStackEntry?.destination?.route.orEmpty()
+    val metrics = LocalCarMetrics.current
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    // 平板（含小尺寸平板）横竖屏都用双栏：smallestScreenWidthDp 是设备级属性，旋转不变
+    val isTablet = configuration.smallestScreenWidthDp >= 600
+    // 双栏发现页适用范围：车机 / 平板（任意朝向）/ 手机横屏。纯手机竖屏保持原播放页。
+    val useDiscover = metrics.enabled || isTablet || isLandscape
+    val showSearchBar = route in CONTENT_ROUTES
+
+    // startDestination 只在首次组合计算一次并冻结。Activity 声明了 configChanges，旋转不重建，
+    // 若 startDestination 随方向变化，NavHost 会重建 graph 并清空整个返回栈（二级页面全丢）。
+    // 之后的方向切换统一交给下面的 effect 用普通导航完成，不再动 startDestination。
+    val startDestination = remember { if (openPlayer || !useDiscover) "player" else "discover" }
+
+    // 通知/外部「打开播放器」：冷启动由 startDestination 保证；热启动 onNewIntent 时在此跳转。
     LaunchedEffect(openPlayer) {
         if (openPlayer && nav.currentBackStackEntry?.destination?.route != "player") {
             nav.navigate("player") { launchSingleTop = true }
         }
     }
 
-    val backStackEntry by nav.currentBackStackEntryAsState()
-    val route = backStackEntry?.destination?.route.orEmpty()
-    val metrics = LocalCarMetrics.current
-    val showSearchBar = route in CONTENT_ROUTES
+    // 旋转/分屏导致方向变化时切换主页面。首帧跳过，避免覆盖 startDestination 的 openPlayer 决策
+    // （横屏从通知冷启动时若不做此保护，会被立刻踢回 discover）。
+    val firstOrientationPass = remember { mutableStateOf(true) }
+    LaunchedEffect(isLandscape, isTablet, metrics.enabled) {
+        if (firstOrientationPass.value) {
+            firstOrientationPass.value = false
+            return@LaunchedEffect
+        }
+        // 仅纯手机、且当前正处于 player/discover 主路由时才切换，绝不打断二级页面。
+        if (!metrics.enabled && !isTablet) {
+            val current = nav.currentBackStackEntry?.destination?.route
+            val target = if (isLandscape) "discover" else "player"
+            if ((current == "player" || current == "discover") && current != target) {
+                nav.navigate(target) { launchSingleTop = true }
+            }
+        }
+    }
     val showMiniPlayer = playState.currentSong != null &&
-        route != "player" && !route.startsWith("fnosLogin")
+        route != "player" && route != "discover" && !route.startsWith("fnosLogin")
     // 列表/设置页的搜索结果浮层：返回键先清空搜索，不直接退出页面
     BackHandler(enabled = query.isNotBlank() && showSearchBar) { vm.setQuery("") }
 
@@ -160,12 +193,13 @@ fun AppRoot(vm: MainViewModel, openPlayer: Boolean) {
                 Box(Modifier.weight(1f), contentAlignment = Alignment.TopCenter) {
                     NavHost(
                         navController = nav,
-                        startDestination = "player",
+                        startDestination = startDestination,
                         modifier = Modifier
                             .fillMaxHeight()
-                            .widthIn(max = if (route == "player") 4000.dp else metrics.listMaxWidth)
+                            .widthIn(max = if (route == "player" || route == "discover") 4000.dp else metrics.listMaxWidth)
                     ) {
                         composable("library") { LibraryScreen(vm, playerVm, nav) }
+                        composable("discover") { DiscoverScreen(vm, playerVm, nav) }
                         composable("settings") { SettingsScreen(vm, playerVm, nav) }
                         composable("player") {
                             PlayerScreen(

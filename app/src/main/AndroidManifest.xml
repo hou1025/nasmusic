@@ -38,6 +38,10 @@
             android:label="@string/app_name"
             android:theme="@style/Theme.NasMusic"
             android:windowSoftInputMode="adjustResize">
+            <!-- Android 16+ 大屏/车机多窗口：显式声明支持尺寸变化，避免被系统强制锁定全屏 -->
+            <meta-data
+                android:name="android.supports_size_changes"
+                android:value="true" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
