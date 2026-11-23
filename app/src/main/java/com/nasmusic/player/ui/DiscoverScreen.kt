@@ -310,12 +310,17 @@ private fun NowPlayingPane(
     val position = state.positionMs.coerceIn(0L, duration.toLong()).toFloat()
 
     BoxWithConstraints(modifier = modifier) {
-        // 分屏窗口又窄又矮：同时按卡片自身宽高等比压缩，保持双栏但整体缩小
-        val scale = minOf(maxWidth / 300.dp, maxHeight / 560.dp).coerceIn(0.5f, 1f)
+        // 底部播控按钮区固定预留高度（主按钮约 64dp + 上下间距），
+        // 上部内容只能用它之外的高度，避免矮窗口时把按钮挤出卡片。
+        val controlsReserve = 92.dp
+        val contentHeight = (maxHeight - controlsReserve).coerceAtLeast(150.dp)
+        // 按「扣除按钮后的可用高度」缩放上部内容，下限放宽以适配更矮的横屏/分屏窗口
+        val scale = minOf(maxWidth / 300.dp, contentHeight / 460.dp).coerceIn(0.42f, 1f)
         fun sp(value: Dp): Dp = value * scale
-        // 歌词字号单独跟随窗口尺寸：整体 scale 上限为 1（车机大窗口不会放大），
-        // 这里按卡片实际宽度给出 lyricScale，屏幕/窗口越大字越大，窄屏则缩小，不溢出。
-        val lyricScale = (maxWidth / 300.dp).coerceIn(0.5f, 1.35f)
+        // 歌词字号跟随窗口：同时受宽度与「可用高度」约束。
+        // 横屏是宽而矮——只按宽度会把歌词放到 1.35 倍独占高度、挤掉按钮，
+        // 因此取宽高两者较小值，宽大屏仍能放大，矮窗口则自动收小。
+        val lyricScale = minOf(maxWidth / 300.dp, contentHeight / 460.dp).coerceIn(0.55f, 1.35f)
         Card(
             shape = RoundedCornerShape(sp(24.dp)),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -326,107 +331,114 @@ private fun NowPlayingPane(
                 Modifier.fillMaxSize().padding(sp(16.dp)),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-            Text(
-                "正在播放",
-                style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp * scale),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = sp(8.dp))
-            )
-            Spacer(Modifier.height(sp(6.dp)))
-
-            VinylDisc(artwork = artwork, song = song, discSize = sp(142.dp), playing = state.isPlaying)
-
-            Spacer(Modifier.height(sp(6.dp)))
-            // 黑胶下方的三行滚动歌词（上一句 / 当前句 / 下一句），随播放进度切换并带动画
-            DiscLyrics(lyrics = lyrics, positionMs = state.positionMs, scale = lyricScale)
-
-            Spacer(Modifier.height(sp(8.dp)))
-            Text(
-                song?.title ?: "暂无播放歌曲",
-                style = MaterialTheme.typography.titleLarge.copy(fontSize = 22.sp * scale),
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                textAlign = TextAlign.Center
-            )
-            Spacer(Modifier.height(sp(4.dp)))
-            Text(
-                song?.artist?.ifBlank { "未知歌手" } ?: "从音乐列表选一首开始",
-                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp * scale),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1
-            )
-
-            Spacer(Modifier.height(sp(16.dp)))
-            Slider(
-                value = position,
-                onValueChange = { playerVm.seekTo(it.toLong()) },
-                valueRange = 0f..duration,
-                colors = SliderDefaults.colors(
-                    thumbColor = DiscoverRed,
-                    activeTrackColor = DiscoverRed,
-                    inactiveTrackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
-                ),
-                modifier = Modifier.fillMaxWidth().height(sp(20.dp))
-            )
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = sp(4.dp)),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(formatDuration(state.positionMs), fontSize = 12.sp * scale, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(formatDuration(state.durationMs.takeIf { it > 0 } ?: song?.durationMs ?: 0L),
-                    fontSize = 12.sp * scale, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-
-            Spacer(Modifier.height(sp(12.dp)))
-            val playProgress = (position / duration).coerceIn(0f, 1f)
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                DiscCircleButton(
-                    onClick = { song?.let { playerVm.toggleFavorite(it) } },
-                    size = sp(48.dp),
-                    active = song?.isFavorite == true,
-                    enabled = song != null,
-                    scale = scale
+                // 上部内容占据剩余空间并居中；缩放已按「扣除按钮预留」计算，
+                // 因此即便横屏窗口很矮，这部分也不会把下面的按钮挤出卡片。
+                Column(
+                    Modifier.weight(1f).fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
                 ) {
-                    Icon(
-                        if (song?.isFavorite == true) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                        contentDescription = "收藏",
-                        tint = if (song?.isFavorite == true) DiscoverRed else DiscoverInk.copy(alpha = 0.75f),
-                        modifier = Modifier.size(sp(26.dp))
+                    Text(
+                        "正在播放",
+                        style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp * scale),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = sp(6.dp))
                     )
-                }
-                DiscCircleButton(
-                    onClick = { playerVm.playPause() },
-                    size = sp(64.dp),
-                    filled = true,
-                    playing = state.isPlaying,
-                    progress = playProgress,
-                    scale = scale
-                ) {
-                    DiscPlayPauseGlyph(playing = state.isPlaying, size = sp(34.dp), color = DiscoverInk)
-                }
-                DiscCircleButton(
-                    onClick = { playerVm.next() },
-                    size = sp(48.dp),
-                    enabled = song != null,
-                    scale = scale
-                ) {
-                    Icon(
-                        Icons.Default.SkipNext,
-                        contentDescription = "下一首",
-                        tint = DiscoverInk.copy(alpha = 0.85f),
-                        modifier = Modifier.size(sp(28.dp))
+                    Spacer(Modifier.height(sp(4.dp)))
+
+                    VinylDisc(artwork = artwork, song = song, discSize = sp(138.dp), playing = state.isPlaying)
+
+                    Spacer(Modifier.height(sp(4.dp)))
+                    // 黑胶下方的三行滚动歌词（上一句 / 当前句 / 下一句），随播放进度切换并带动画
+                    DiscLyrics(lyrics = lyrics, positionMs = state.positionMs, scale = lyricScale)
+
+                    Spacer(Modifier.height(sp(6.dp)))
+                    Text(
+                        song?.title ?: "暂无播放歌曲",
+                        style = MaterialTheme.typography.titleLarge.copy(fontSize = 20.sp * scale),
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        textAlign = TextAlign.Center
                     )
+                    Spacer(Modifier.height(sp(2.dp)))
+                    Text(
+                        song?.artist?.ifBlank { "未知歌手" } ?: "从音乐列表选一首开始",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp * scale),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
+                    )
+
+                    Spacer(Modifier.height(sp(10.dp)))
+                    Slider(
+                        value = position,
+                        onValueChange = { playerVm.seekTo(it.toLong()) },
+                        valueRange = 0f..duration,
+                        colors = SliderDefaults.colors(
+                            thumbColor = DiscoverRed,
+                            activeTrackColor = DiscoverRed,
+                            inactiveTrackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+                        ),
+                        modifier = Modifier.fillMaxWidth().height(sp(18.dp))
+                    )
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = sp(4.dp)),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(formatDuration(state.positionMs), fontSize = 11.sp * scale, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(formatDuration(state.durationMs.takeIf { it > 0 } ?: song?.durationMs ?: 0L),
+                            fontSize = 11.sp * scale, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+
+                // 底部播控按钮：作为 Column 最后一项固定高度，永远留在卡片底部
+                Spacer(Modifier.height(sp(6.dp)))
+                val playProgress = (position / duration).coerceIn(0f, 1f)
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    DiscCircleButton(
+                        onClick = { song?.let { playerVm.toggleFavorite(it) } },
+                        size = sp(48.dp),
+                        active = song?.isFavorite == true,
+                        enabled = song != null,
+                        scale = scale
+                    ) {
+                        Icon(
+                            if (song?.isFavorite == true) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                            contentDescription = "收藏",
+                            tint = if (song?.isFavorite == true) DiscoverRed else DiscoverInk.copy(alpha = 0.75f),
+                            modifier = Modifier.size(sp(26.dp))
+                        )
+                    }
+                    DiscCircleButton(
+                        onClick = { playerVm.playPause() },
+                        size = sp(64.dp),
+                        filled = true,
+                        playing = state.isPlaying,
+                        progress = playProgress,
+                        scale = scale
+                    ) {
+                        DiscPlayPauseGlyph(playing = state.isPlaying, size = sp(34.dp), color = DiscoverInk)
+                    }
+                    DiscCircleButton(
+                        onClick = { playerVm.next() },
+                        size = sp(48.dp),
+                        enabled = song != null,
+                        scale = scale
+                    ) {
+                        Icon(
+                            Icons.Default.SkipNext,
+                            contentDescription = "下一首",
+                            tint = DiscoverInk.copy(alpha = 0.85f),
+                            modifier = Modifier.size(sp(28.dp))
+                        )
+                    }
                 }
             }
-
-            Spacer(Modifier.weight(1f))
         }
-    }
     }
 }
 
