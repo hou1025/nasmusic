@@ -16,7 +16,10 @@ data class Lyrics(
     val offsetMs: Long = 0L,
     val synced: Boolean = true
 ) {
-    /** 当前播放位置对应的歌词行下标，供滚动高亮使用。 */
+    /**
+     * 当前播放位置对应的歌词行下标，供滚动高亮使用。
+     * offsetMs = LRC 文件自带偏移 + 用户手动调节偏移，正值表示歌词需提前显示。
+     */
     fun indexAt(positionMs: Long): Int {
         if (lines.isEmpty()) return -1
         val p = positionMs - offsetMs
@@ -85,13 +88,19 @@ class LyricsLoader(
             var plainText: String? = null
             for (candidate in candidates.distinct()) {
                 val text = runCatching { nasRepository.readText(candidate) }.getOrNull() ?: continue
-                LrcParser.parse(text)?.let { return@withContext it.copy(offsetMs = offsetMs) }
+                // LRC 文件自带的 [offset:] 必须保留，再叠加用户手动调节值；
+                // 旧实现用 copy(offsetMs = 用户值) 直接覆盖，把文件偏移抹成 0，
+                // 导致带 offset 的歌词（网易云下载常见）整体错位、与时间对不上。
+                LrcParser.parse(text)?.let { parsed ->
+                    return@withContext parsed.copy(offsetMs = parsed.offsetMs + offsetMs)
+                }
                 if (plainText == null && text.isNotBlank()) plainText = text.trim()
             }
 
             if (!embeddedLyrics.isNullOrBlank()) {
-                return@withContext LrcParser.parse(embeddedLyrics)?.copy(offsetMs = offsetMs)
-                    ?: Lyrics(listOf(LyricLine(0L, embeddedLyrics)), offsetMs, false)
+                return@withContext LrcParser.parse(embeddedLyrics)?.let { parsed ->
+                    parsed.copy(offsetMs = parsed.offsetMs + offsetMs)
+                } ?: Lyrics(listOf(LyricLine(0L, embeddedLyrics)), offsetMs, false)
             }
             // 在线源返回的纯文本歌词（无时间轴）作为静态歌词展示
             plainText?.let { Lyrics(listOf(LyricLine(0L, it)), offsetMs, false) }

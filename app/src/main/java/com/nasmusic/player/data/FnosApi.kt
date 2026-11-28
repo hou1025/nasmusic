@@ -5,6 +5,7 @@ import com.nasmusic.player.core.HttpStatusException
 import com.nasmusic.player.core.isPrivateOrLocalHost
 import com.nasmusic.player.core.readLimitedBytes
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -50,13 +51,19 @@ private val CONNECT_SUFFIXES = listOf("5ddd.com", "fnos.net", "fnofly.com")
 internal object NasHttp {
     val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(45, TimeUnit.SECONDS)
+            .connectTimeout(12, TimeUnit.SECONDS)
+            // 45 秒对音频流太长：链路卡住时线程会挂 45 秒才报错，播放表现为长时间静默。
+            .readTimeout(25, TimeUnit.SECONDS)
             .writeTimeout(20, TimeUnit.SECONDS)
+            // 播放与后台缓存共用连接池：默认配置下两条流可能各建连接并重复 TLS 握手。
+            .connectionPool(ConnectionPool(8, 5, TimeUnit.MINUTES))
             .followRedirects(false) // 中继跳到内网地址会泄露凭证，改由调用方受控处理
             .build()
     }
 }
+
+/** 中继链路可能在一次 Range 请求中提前断开；从断点续读的次数上限。 */
+private const val STREAM_RETRY = 3
 
 /** 解析后的接入地址。 */
 data class FnosEndpoint(
@@ -427,7 +434,13 @@ class FnosApi(
         }
     }
 
-    /** 按偏移读取音频流，供 ExoPlayer 拖动进度时随机访问。 */
+    /**
+     * 按偏移读取音频流，供 ExoPlayer 拖动进度时随机访问。
+     *
+     * 飞牛中继常见"Range 请求只回一部分就断开"，旧实现直接返回短读，
+     * 上层会误判为读取失败或异常短读并抛错，表现为播放中途卡顿/中断。
+     * 这里从断点续读最多 STREAM_RETRY 次，把短读在链路层补完整。
+     */
     fun streamRead(
         guid: String,
         position: Long,
@@ -437,23 +450,31 @@ class FnosApi(
     ): Int = withToken { token ->
         if (length <= 0) return@withToken 0
         val query = "guid=${Uri.encode(guid)}"
-        val request = signedRequest(
-            "GET", "/track/stream", query, null, token,
-            range = "bytes=$position-${position + length - 1}"
-        )
-        executeChecked(request).use { response ->
-            if (response.code == 401 || response.code == 403) throw FnosAuthException()
-            // 必须拿到真实 206 且 Content-Range 起始与 position 一致，否则数据会整体错位
-            requirePartialContent(response, position)
-            val stream = response.body?.byteStream() ?: return@withToken -1
-            var total = 0
-            while (total < length) {
-                val n = stream.read(buffer, offset + total, length - total)
-                if (n < 0) break
-                total += n
+        var total = 0
+        var attempt = 0
+        while (total < length && attempt < STREAM_RETRY) {
+            val request = signedRequest(
+                "GET", "/track/stream", query, null, token,
+                range = "bytes=${position + total}-${position + length - 1}"
+            )
+            val got = executeChecked(request).use { response ->
+                if (response.code == 401 || response.code == 403) throw FnosAuthException()
+                // 必须拿到真实 206 且 Content-Range 起始与请求位置一致，否则数据会整体错位
+                requirePartialContent(response, position + total)
+                val stream = response.body?.byteStream() ?: return@use 0
+                var n = 0
+                while (n < length - total) {
+                    val r = stream.read(buffer, offset + total + n, length - total - n)
+                    if (r < 0) break
+                    n += r
+                }
+                n
             }
-            if (total == 0) -1 else total
+            total += got
+            if (got == 0) break
+            attempt++
         }
+        if (total == 0) -1 else total
     }
 
     /** 共享客户端不做单例关闭，保留方法仅为兼容既有调用点。 */

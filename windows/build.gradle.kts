@@ -50,7 +50,7 @@ compose.desktop {
         nativeDistributions {
             // 应用名与 Android 端 strings.xml 的 app_name 一致（"音乐"）
             packageName = "音乐"
-            packageVersion = "2.3.9"
+            packageVersion = "2.3.10"
             // 只出 AppImage 目录：msi/exe 需要下载 WiX（本机离线，暂不启用）
             targetFormats(org.jetbrains.compose.desktop.application.dsl.TargetFormat.AppImage)
             windows {

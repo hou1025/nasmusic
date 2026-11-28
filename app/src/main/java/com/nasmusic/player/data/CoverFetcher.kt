@@ -93,6 +93,22 @@ class CoverFetcher(context: Context) {
         null
     }
 
+    /**
+     * 已有封面地址时直接下载落盘（如歌词候选自带的专辑图）。
+     * 省掉一次图片搜索往返，且保证封面与歌词来自同一首歌；失败返回 null，由调用方回退。
+     */
+    suspend fun fetchFromUrl(song: Song, url: String): String? = withContext(Dispatchers.IO) {
+        if (!url.startsWith("http")) return@withContext null
+        val bytes = runCatching { download(url) }.getOrNull() ?: return@withContext null
+        if (bytes.size < 1024) return@withContext null
+        runCatching {
+            val file = fileFor(song.id)
+            file.writeBytes(bytes)
+            failed.remove(song.id)
+            Uri.fromFile(file).toString()
+        }.getOrNull()
+    }
+
     private fun neteaseUrl(query: String, artist: String): Pair<String, String>? {
         val keyword = if (artist.isBlank()) query else "$query $artist"
         val url = "https://music.163.com/api/search/get?type=1&s=${enc(keyword)}&limit=8&offset=0"

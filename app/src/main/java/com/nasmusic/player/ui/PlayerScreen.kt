@@ -1039,11 +1039,10 @@ private fun PhonePlayerScreen(
             val contentModifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
-                .padding(horizontal = 10.dp, vertical = 4.dp)
+                .padding(horizontal = 10.dp, vertical = 2.dp)
             Box(contentModifier, contentAlignment = Alignment.Center) {
                 when (tab) {
-                    PlayerTab.COVER -> {
-                        // 封面 + 歌词整合视图：上半封面（缩小让出空间），下半滚动歌词
+                    PlayerTab.COVER -> {                        // 封面 + 歌词整合视图：上半封面（缩小让出空间），下半滚动歌词
                         Column(
                             Modifier.fillMaxSize(),
                             horizontalAlignment = Alignment.CenterHorizontally
@@ -1191,7 +1190,7 @@ private fun PhonePlayerScreen(
 
             // 歌名与标签：居中，展示我们自己的来源/格式信息
             Column(
-                Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 6.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 4.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
@@ -1278,11 +1277,11 @@ private fun PhonePlayerScreen(
                 )
             }
 
-            // 控制行：触点柔光 + 果冻回弹 + 主按钮进度环 + 呼吸光晕
+            // 控制行：紧贴时间行，不再留垂直空白
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    .padding(horizontal = 12.dp, vertical = 0.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -1410,7 +1409,6 @@ private fun PhonePlayerScreen(
                     )
                 }
             }
-            Spacer(Modifier.height(4.dp))
         } // Column：播放页主体
         if (searchMode) {
             PlayerSearchOverlay(vm, playerVm, onClose = closeSearch)
@@ -1540,7 +1538,7 @@ private fun LyricsPickerDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("下载歌词 · ${song.title}") },
+        title = { Text("下载歌词与封面 · ${song.title}") },
         text = {
             Column {
                 if (busy) {
@@ -1553,7 +1551,7 @@ private fun LyricsPickerDialog(
                     TextButton(onClick = onClear) { Text("清除本地歌词") }
                 }
                 InfoText(
-                    "按歌名、歌手与时长匹配；选中后保存到本机，下次播放离线可用。",
+                    "按歌名、歌手与时长匹配；选中后歌词与封面一并保存到本机，下次播放离线可用。",
                     Modifier.padding(bottom = 6.dp)
                 )
                 if (candidates.isEmpty() && !busy) {
@@ -1926,9 +1924,9 @@ private fun CarPlayerScreen(
                                 )
                             }
 
-                            // 五个同色圆形按键，直径按车机触控目标放大
+                            // 五个同色圆形按键，直径按车机触控目标放大；紧贴时间行
                             Row(
-                                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
                                 horizontalArrangement = Arrangement.SpaceEvenly,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
@@ -2399,10 +2397,8 @@ private fun CombinedLyrics(
                     animationSpec = tween(430)
                 )
                 val lineAlpha by animateFloatAsState(if (active) 1f else 0.86f, tween(430))
-                val lineScale by animateFloatAsState(
-                    if (active) 1.06f else 1f,
-                    spring(dampingRatio = 0.75f, stiffness = 380f)
-                )
+                // 字号固定不缩放：切换时的弹跳放大容易让文字跳动、看久了伤眼，
+                // 当前行只用颜色和透明度平滑过渡。
                 Text(
                     line.text,
                     style = MaterialTheme.typography.bodyLarge,
@@ -2412,11 +2408,7 @@ private fun CombinedLyrics(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(vertical = 7.dp)
-                        .graphicsLayer {
-                            alpha = lineAlpha
-                            scaleX = lineScale
-                            scaleY = lineScale
-                        }
+                        .graphicsLayer { alpha = lineAlpha }
                 )
             }
         }

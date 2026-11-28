@@ -69,7 +69,13 @@ import com.nasmusic.player.data.LyricsSource
 
 @Composable
 @Suppress("UNUSED_PARAMETER")
-fun SettingsScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavController) {
+fun SettingsScreen(
+    vm: MainViewModel,
+    playerVm: PlayerViewModel,
+    nav: NavController,
+    // 横屏双栏内嵌时传入：音效在右栏切换，左侧播放卡片保持不动；竖屏整页时为空走导航。
+    onOpenSound: (() -> Unit)? = null
+) {
     val settings by vm.settingsState.collectAsStateWithLifecycle()
     val folders by vm.folders.collectAsStateWithLifecycle()
     val sleepRemaining by playerVm.sleepRemainingMs.collectAsStateWithLifecycle()
@@ -108,7 +114,10 @@ fun SettingsScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavControl
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(vertical = 6.dp)
-                .clickable { nav.navigate("soundEffect") { launchSingleTop = true } },
+                .clickable {
+                    if (onOpenSound != null) onOpenSound()
+                    else nav.navigate("soundEffect") { launchSingleTop = true }
+                },
             shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(
                 containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
@@ -463,8 +472,8 @@ fun SettingsScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavControl
                 }
             }
             InfoText(
-                "自动模式同时检索 LRCLIB 与网易云音乐；下载的歌词保存在应用私有目录，不写入系统媒体库。" +
-                    "播放页可手动搜索并挑选版本。",
+                "自动模式同时检索 LRCLIB 与网易云音乐；下载歌词时会一并保存匹配到的专辑封面，" +
+                    "两者都放在应用私有目录，不写入系统媒体库。播放页可手动搜索并挑选版本。",
                 Modifier.padding(top = 6.dp)
             )
             Text(

@@ -82,6 +82,13 @@ class AudioEffectChain(private val context: Context) {
             release()
             return
         }
+        // 原生直通模式：一个效果器都不创建。旧实现即使 OFF 也会 new 出 6 个
+        // AudioEffect（Binder 跨进程调用 + 音频图重连），既阻塞线程又强制关闭
+        // ExoPlayer 的音频直通路径，是本地音乐也卡的系统级根因之一。
+        if (state.mode == SoundMode.OFF) {
+            release()
+            return
+        }
         // 同一 session 只更新参数，不重建效果器。
         if (sessionId == attachedSession) {
             apply(state)
@@ -117,6 +124,12 @@ class AudioEffectChain(private val context: Context) {
     fun apply(state: SoundEffectState) {
         lastState = state
         val on = state.mode != SoundMode.OFF
+        // 从音效切回原生直通时，必须彻底释放效果器实例，否则音频仍走效果链处理路径
+        if (!on) {
+            release()
+            lastState = state
+            return
+        }
         applyEqualizer(state, on)
         applyBass(state, on)
         applySurround(state, on)

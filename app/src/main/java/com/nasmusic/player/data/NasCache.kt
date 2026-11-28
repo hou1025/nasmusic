@@ -6,16 +6,21 @@ import com.nasmusic.player.core.SettingsStore
 import com.nasmusic.player.core.Song
 import com.nasmusic.player.core.parseNasUri
 import com.nasmusic.player.core.suspendCatching
+import com.nasmusic.player.core.nasUri
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+
+private const val FIRST_CACHE_CHUNK = 96 * 1024
+private const val MAX_CACHE_CHUNK = 512 * 1024
 
 /** NAS 歌曲缓存：默认在线播放，按需缓存；LRU 自动清理，缓存文件不写入系统媒体库。 */
 class NasCacheManager(
@@ -48,22 +53,76 @@ class NasCacheManager(
     /** 已缓存歌曲改用本地文件播放，断网仍可播；未缓存走 nas:// 在线数据源。 */
     fun playbackUri(song: Song): String {
         if (!song.isNas) return song.uri
-        return cachedFile(song.id)?.let { Uri.fromFile(it).toString() } ?: song.uri
+        cachedFile(song.id)?.let { return Uri.fromFile(it).toString() }
+        // 曲库里已有的文件大小直接带进 URI，数据源无需再发 Range 0-0 探测长度
+        if (song.sizeBytes > 0) {
+            parseNasUri(song.uri)?.let { (sourceId, path) ->
+                return nasUri(sourceId, path, song.sizeBytes)
+            }
+        }
+        return song.uri
     }
 
     fun isCached(song: Song): Boolean = song.isNas && cachedFile(song.id) != null
 
-    suspend fun cacheSong(song: Song): Boolean = withContext(Dispatchers.IO) {
+    /**
+     * 缓存整首歌到本地。
+     *
+     * 速度优化：块大小从 96KB 起渐进放大到 512KB。旧实现用固定 512KB，
+     * 飞牛 FN Connect 中继/弱网下每个 Range 请求要 2~5 秒才返回，
+     * 首块迟迟不出数据，整首歌要等十几到几十秒；渐进块让开头立刻开始落盘，
+     * 稳定后仍用 512KB 压低请求数。
+     *
+     * 短读补齐：中继可能一次只返回部分字节，绝不能把短读当 EOF，否则缓存文件不完整。
+     *
+     * 带宽让步：shouldYield 返回 false 时暂停下载（例如当前播放缓冲不足），
+     * 避免后台缓存把正在播放的歌抢卡。连续让步超过 30 秒则放弃本次缓存。
+     */
+    suspend fun cacheSong(
+        song: Song,
+        shouldYield: () -> Boolean = { true }
+    ): Boolean = withContext(Dispatchers.IO) {
         if (!song.isNas) return@withContext false
         val (sourceId, path) = parseNasUri(song.uri) ?: return@withContext false
         val browser = nasRepository.browserFor(sourceId)
         val tmp = File(dir, Integer.toHexString(song.id.hashCode()) + ".tmp")
         try {
             val access = browser.open(path)
+            var aborted = false
             try {
+                val total = runCatching { access.length }.getOrDefault(0L)
+                val buf = ByteArray(MAX_CACHE_CHUNK)
+                var pos = 0L
+                var chunk = FIRST_CACHE_CHUNK
+                var yieldRounds = 0
                 FileOutputStream(tmp).use { out ->
-                    // 64KB 缓冲会让飞牛/WebDAV 的 Range 请求多 8 倍；512KB 显著降低请求数
-                    access.asInputStream().use { input -> input.copyTo(out, 512 * 1024) }
+                    while (pos < total || total <= 0) {
+                        if (!shouldYield()) {
+                            yieldRounds++
+                            if (yieldRounds > 120) { aborted = true; break }
+                            delay(250)
+                            continue
+                        }
+                        val want = if (total > 0) minOf(chunk.toLong(), total - pos)
+                                   else chunk.toLong()
+                        if (want <= 0) break
+                        var filled = 0
+                        while (filled < want) {
+                            val n = access.readAt(pos + filled, buf, filled, (want - filled).toInt())
+                            if (n <= 0) break
+                            filled += n
+                        }
+                        if (filled <= 0) break
+                        out.write(buf, 0, filled)
+                        pos += filled
+                        // 整块读满才放大：短读时保持小块，避免在抖动链路上反复等大块
+                        if (filled >= want) chunk = (chunk * 2).coerceAtMost(MAX_CACHE_CHUNK)
+                        else if (total <= 0) break // 长度未知时短读视为 EOF
+                    }
+                }
+                if (aborted) {
+                    tmp.delete()
+                    return@withContext false
                 }
             } finally {
                 suspendCatching { access.close() }

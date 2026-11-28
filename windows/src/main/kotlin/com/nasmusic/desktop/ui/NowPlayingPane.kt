@@ -5,7 +5,9 @@ import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,6 +17,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -52,12 +55,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nasmusic.desktop.data.Lyrics
+import com.nasmusic.desktop.model.Song
 import com.nasmusic.desktop.playback.PlaybackState
 import kotlin.math.cos
 import kotlin.math.sin
@@ -108,12 +113,12 @@ fun NowPlayingPane(
                 Spacer(Modifier.height(6.dp * scale))
 
                 VinylDisc(
-                    title = song?.title,
-                    discSize = 150.dp * scale,
+                    song = song,
+                    discSize = 144.dp * scale,
                     playing = playback.isPlaying && song != null
                 )
 
-                Spacer(Modifier.height(6.dp * scale))
+                Spacer(Modifier.height(4.dp * scale))
                 DiscLyricsStrip(
                     lyrics = lyrics,
                     positionMs = playback.positionMs.toLong(),
@@ -137,7 +142,9 @@ fun NowPlayingPane(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
-                Spacer(Modifier.height(10.dp * scale))
+                // 进度条与播控之间原本被「上间距 + 时间行 + 下间距」拉得很开，这里整体收紧，
+                // 省出的纵向空间全部留给上方歌词，避免大屏下歌词被压成两三行。
+                Spacer(Modifier.height(4.dp * scale))
                 Slider(
                     value = position.toFloat(),
                     onValueChange = { onSeek(it.toLong()) },
@@ -150,21 +157,21 @@ fun NowPlayingPane(
                     modifier = Modifier.fillMaxWidth().height(18.dp * scale)
                 )
                 Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 4.dp * scale),
+                    Modifier.fillMaxWidth().padding(horizontal = 6.dp * scale),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text(formatTime(playback.positionMs.toLong()), fontSize = 11.sp * scale,
+                    Text(formatTime(playback.positionMs.toLong()), fontSize = 10.5.sp * scale,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(
                         formatTime((playback.durationMs.takeIf { it > 0 }
                             ?: song?.durationMs?.toDouble() ?: 0.0).toLong()),
-                        fontSize = 11.sp * scale,
+                        fontSize = 10.5.sp * scale,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
 
-            Spacer(Modifier.height(6.dp * scale))
+            Spacer(Modifier.height(2.dp * scale))
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly,
@@ -225,7 +232,7 @@ fun NowPlayingPane(
                 }
             }
 
-            Spacer(Modifier.height(8.dp * scale))
+            Spacer(Modifier.height(6.dp * scale))
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
@@ -279,14 +286,15 @@ private fun CircleControl(
 
 /**
  * 黑胶唱片：盘面随播放旋转、唱臂落针/抬针。
- * 桌面歌曲通常没有内嵌封面，这里用主色圆片 + 音符图标作为中心标签。
+ * 盘心优先显示歌曲封面（裁成圆形，随盘一起转），拿不到封面时退回「主色圆片 + 音符」的黑胶默认样式。
  */
 @Composable
 private fun VinylDisc(
-    title: String?,
+    song: Song?,
     discSize: Dp,
     playing: Boolean
 ) {
+    val cover = rememberSongCover(song)
     val rotation = remember { Animatable(0f) }
     val armSwing = remember { Animatable(1f) }
     LaunchedEffect(playing) {
@@ -348,23 +356,42 @@ private fun VinylDisc(
             }
             Box(
                 Modifier
-                    .size(discSize * 0.58f)
+                    .size(discSize * 0.76f)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primaryContainer),
+                    .background(MaterialTheme.colorScheme.primaryContainer)
+                    .then(
+                        // 有封面时加一圈极细的亮边，让圆形封面贴合盘面的层次
+                        if (cover != null) {
+                            Modifier.border(1.5.dp, Color.White.copy(alpha = 0.12f), CircleShape)
+                        } else {
+                            Modifier
+                        }
+                    ),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    Icons.Default.MusicNote,
-                    contentDescription = title ?: "封面",
-                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                    modifier = Modifier.size(discSize * 0.24f)
-                )
+                if (cover != null) {
+                    Image(
+                        bitmap = cover,
+                        contentDescription = song?.title ?: "封面",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize().clip(CircleShape)
+                    )
+                } else {
+                    Icon(
+                        Icons.Default.MusicNote,
+                        contentDescription = song?.title ?: "封面",
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(discSize * 0.28f)
+                    )
+                }
             }
+            // 中心轴孔：压在封面之上，保持真实唱片的观感
             Box(
                 Modifier
-                    .size(discSize * 0.08f)
+                    .size(discSize * 0.075f)
                     .clip(CircleShape)
-                    .background(Color(0xFFF6F6F8))
+                    .background(Color(0xFFF6F6F8).copy(alpha = 0.94f))
+                    .border(1.dp, Color(0xFF131316).copy(alpha = 0.30f), CircleShape)
             )
         }
 
@@ -401,7 +428,11 @@ private fun VinylDisc(
     }
 }
 
-/** 三行歌词：上一句 / 当前句 / 下一句；无 LRC 时显示占位，保持版式不跳动。 */
+/**
+ * 五行歌词：前两句 / 上一句 / 当前句 / 下一句 / 后一句。
+ * 原先只有三行，桌面窗口高、纵向空余多，扩到五行后歌词上下文更完整；
+ * 高度改为按内容自适应（最小 86dp），不再写死 64dp 造成上下大片空白。
+ */
 @Composable
 private fun DiscLyricsStrip(
     lyrics: Lyrics?,
@@ -410,12 +441,14 @@ private fun DiscLyricsStrip(
 ) {
     val lines = lyrics?.lines.orEmpty()
     val index = lyrics?.indexAt(positionMs) ?: -1
-    val prev = lines.getOrNull(index - 1)?.text
     val current = if (index >= 0) lines.getOrNull(index)?.text else null
-    val next = lines.getOrNull(index + 1)?.text
+
+    // 未播放到第一句时 index 可能为 -1，此时把窗口整体下移，保证「即将唱的第一句」出现在当前行位置
+    val anchor = if (index < 0) 0 else index
+    fun lineAt(offset: Int): String? = lines.getOrNull(anchor + offset)?.text
 
     Column(
-        Modifier.fillMaxWidth().height(64.dp * scale),
+        Modifier.fillMaxWidth().heightIn(min = 86.dp * scale),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
@@ -433,28 +466,33 @@ private fun DiscLyricsStrip(
                 textAlign = TextAlign.Center
             )
         } else {
+            // 远端两行用更小的字号和透明度，避免抢当前行的视觉重心
+            listOf(-2, -1).forEach { offset ->
+                Text(
+                    lineAt(offset) ?: " ",
+                    fontSize = 10.5.sp * scale,
+                    maxLines = 1,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.42f)
+                )
+                Spacer(Modifier.height(2.dp * scale))
+            }
             Text(
-                prev ?: " ",
-                fontSize = 11.sp * scale,
-                maxLines = 1,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-            )
-            Spacer(Modifier.height(3.dp * scale))
-            Text(
-                current ?: "♪",
-                fontSize = 13.sp * scale,
+                if (index < 0) "♪" else (current ?: "♪"),
+                fontSize = 14.sp * scale,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 color = MaterialTheme.colorScheme.onSurface,
                 textAlign = TextAlign.Center
             )
-            Spacer(Modifier.height(3.dp * scale))
-            Text(
-                next ?: " ",
-                fontSize = 11.sp * scale,
-                maxLines = 1,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-            )
+            listOf(1, 2).forEach { offset ->
+                Spacer(Modifier.height(2.dp * scale))
+                Text(
+                    lineAt(offset) ?: " ",
+                    fontSize = 10.5.sp * scale,
+                    maxLines = 1,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.42f)
+                )
+            }
         }
     }
 }

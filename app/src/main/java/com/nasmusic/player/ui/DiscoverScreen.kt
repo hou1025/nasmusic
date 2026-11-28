@@ -103,6 +103,8 @@ private val DiscoverInk = Color(0xFF23252B)
 /** 车机双栏右栏里可内嵌的二级页面：保持在发现页内，左侧播放卡片不随导航消失。 */
 private sealed interface RightPane {
     data object None : RightPane
+    // 搜索内嵌在右栏：左侧播放卡片常驻，不随导航消失
+    data object Search : RightPane
     data class FnosLogin(val sourceId: String) : RightPane
     data class OnlineLogin(val sourceId: String) : RightPane
     data class NasBrowser(val sourceId: String, val path: String) : RightPane
@@ -139,6 +141,8 @@ fun DiscoverScreen(
     val playlists by vm.playlists.collectAsStateWithLifecycle()
     val nasSources by vm.nasSources.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.refreshNasConnections() }
+    // 搜索词提升到发现页：搜索作为右栏二级页面，输入即在这里过滤
+    val query by vm.query.collectAsStateWithLifecycle()
     var tab by remember { mutableStateOf(0) }
     // 右栏二级页面（FN 登录 / NAS 浏览 / 歌单详情）内嵌在发现页里，左侧播放卡片常驻不受影响。
     // startInSound=true 时（横屏独立音效入口）初始就落在音效页，同样保留左侧播放卡片。
@@ -154,11 +158,13 @@ fun DiscoverScreen(
         val artwork = state.currentSong?.let { coverOverrides[it.id] ?: it.artworkUri }
         // 点顶部标签时先退出二级页面，保证右侧切标签总能回到对应主内容
         val onTab: (Int) -> Unit = { tab = it; rightPane = RightPane.None }
+        // 不再 nav.navigate("library")：那会把整个 NavHost 切成单页，
+        // 左侧播放卡片消失、搜索结果又铺满全屏。改为右栏内嵌搜索页。
         val onSearch = {
             vm.setQuery("")
-            nav.navigate("library") { launchSingleTop = true }
+            rightPane = RightPane.Search
         }
-        val backToTabs = { rightPane = RightPane.None }
+        val backToTabs = { rightPane = RightPane.None; vm.setQuery("") }
         val tabs: @Composable ColumnScope.() -> Unit = {
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (val pane = rightPane) {
@@ -190,11 +196,36 @@ fun DiscoverScreen(
                         playlistId = pane.playlistId,
                         onBack = backToTabs
                     )
+                    RightPane.Search -> {
+                        // 搜索只在右栏内展开，左侧 NowPlayingPane 始终不动；
+                        // 返回按钮与切标签都回到原标签页，并清空关键词。
+                        Column(Modifier.fillMaxSize()) {
+                            SimpleTopBar(title = "搜索", onBack = backToTabs)
+                            AppSearchBar(
+                                query = query,
+                                onQueryChange = { vm.setQuery(it) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp * uiScale, vertical = 8.dp * uiScale)
+                            )
+                            Box(Modifier.weight(1f).fillMaxWidth()) {
+                                if (query.isBlank()) {
+                                    EmptyState("输入歌名、歌手或专辑搜索")
+                                } else {
+                                    SearchResultsPanel(vm, playerVm, onPicked = backToTabs)
+                                }
+                            }
+                        }
+                    }
                     RightPane.Settings -> {
                         Column(Modifier.fillMaxSize()) {
                             SimpleTopBar(title = "设置", onBack = backToTabs)
                             Box(Modifier.weight(1f).fillMaxWidth()) {
-                                SettingsScreen(vm, playerVm, nav)
+                                // 设置里的音效入口也内嵌右栏，避免跳到整页让左侧播放卡片消失
+                                SettingsScreen(
+                                    vm, playerVm, nav,
+                                    onOpenSound = { rightPane = RightPane.SoundEffect }
+                                )
                             }
                         }
                     }
@@ -381,12 +412,13 @@ private fun NowPlayingPane(
                 Modifier.fillMaxSize().padding(sp(16.dp)),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // 上部内容占据剩余空间并居中；缩放已按「扣除按钮预留」计算，
-                // 因此即便横屏窗口很矮，这部分也不会把下面的按钮挤出卡片。
+                // 上部内容贴顶对齐：标题与黑胶紧靠卡片顶部，进度条/时间紧贴播控按钮。
+                // 中间的弹性空白用 weight Spacer 放在歌词与歌名之间，两头都不留白。
+                // 缩放已按「扣除按钮预留」计算，矮窗口也不会把按钮挤出卡片。
                 Column(
                     Modifier.weight(1f).fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
+                    verticalArrangement = Arrangement.Top
                 ) {
                     Text(
                         "正在播放",
@@ -402,7 +434,8 @@ private fun NowPlayingPane(
                     // 黑胶下方的三行滚动歌词（上一句 / 当前句 / 下一句），随播放进度切换并带动画
                     DiscLyrics(lyrics = lyrics, positionMs = state.positionMs, scale = lyricScale)
 
-                    Spacer(Modifier.height(sp(6.dp)))
+                    // 弹性空白落在这里：顶部贴标题、底部贴进度条，中间自然过渡
+                    Spacer(Modifier.weight(1f).height(sp(2.dp)))
                     Text(
                         song?.title ?: "暂无播放歌曲",
                         style = MaterialTheme.typography.titleLarge.copy(fontSize = 20.sp * scale),
@@ -419,7 +452,7 @@ private fun NowPlayingPane(
                         maxLines = 1
                     )
 
-                    Spacer(Modifier.height(sp(10.dp)))
+                    Spacer(Modifier.height(sp(6.dp)))
                     Slider(
                         value = position,
                         onValueChange = { playerVm.seekTo(it.toLong()) },
@@ -441,8 +474,7 @@ private fun NowPlayingPane(
                     }
                 }
 
-                // 底部播控按钮：作为 Column 最后一项固定高度，永远留在卡片底部
-                Spacer(Modifier.height(sp(6.dp)))
+                // 底部播控按钮：紧贴上方的进度条/时间行，不留多余空隙
                 val playProgress = (position / duration).coerceIn(0f, 1f)
                 Row(
                     Modifier.fillMaxWidth(),
@@ -782,7 +814,7 @@ private fun VinylDisc(
             }
             Box(
                 Modifier
-                    .size(discSize * 0.60f)
+                    .size(discSize * 0.76f)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.primaryContainer),
                 contentAlignment = Alignment.Center
@@ -792,14 +824,14 @@ private fun VinylDisc(
                         model = artwork,
                         contentDescription = song?.title ?: "封面",
                         contentScale = ContentScale.Crop,
-                        modifier = Modifier.size(discSize * 0.60f).clip(CircleShape)
+                        modifier = Modifier.size(discSize * 0.76f).clip(CircleShape)
                     )
                 } else {
                     Icon(
                         Icons.Default.MusicNote,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.size(discSize * 0.26f)
+                        modifier = Modifier.size(discSize * 0.30f)
                     )
                 }
             }
@@ -874,19 +906,10 @@ private fun DiscLyrics(
     val nextText = if (current >= 0) lines.getOrNull(current + 1)?.text.orEmpty()
     else lines.firstOrNull()?.text.orEmpty()
 
-    // 当前句的呼吸动画：一直在跑，暂停时由 alpha 压低，视觉上更柔和
-    val infinite = rememberInfiniteTransition()
-    val breathe by infinite.animateFloat(
-        0f, 1f,
-        infiniteRepeatable(tween(1800, easing = FastOutSlowInEasing), RepeatMode.Reverse)
-    )
-    val activeScale by animateFloatAsState(
-        1f + 0.03f * breathe,
-        spring(dampingRatio = 0.6f, stiffness = 320f)
-    )
-
-    // 行高随歌词缩放同步放大，保证加大字号后三行仍完整不裁切
-    val rowHeight = 24.dp * scale
+    // 字号固定不缩放：持续的呼吸缩放会让文字一直在跳，长时间看很伤眼。
+    // 当前句只靠颜色和字重区分，静态字号看着稳。
+    // 行高留足：当前句 18sp，行高偏小会裁掉字体上下缘。
+    val rowHeight = 30.dp * scale
     Column(
         modifier.fillMaxWidth().height(rowHeight * 3),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -906,8 +929,7 @@ private fun DiscLyrics(
             scale = scale,
             height = rowHeight,
             fontSize = 18f.sp,
-            color = DiscoverRed,
-            animatedScale = activeScale
+            color = DiscoverRed
         )
         LyricRow(
             text = nextText,
@@ -928,13 +950,8 @@ private fun LyricRow(
     scale: Float,
     height: Dp,
     fontSize: androidx.compose.ui.unit.TextUnit,
-    color: Color,
-    animatedScale: Float = 1f
+    color: Color
 ) {
-    val rowScale by animateFloatAsState(
-        if (active) animatedScale else 1f,
-        spring(dampingRatio = 0.6f, stiffness = 320f)
-    )
     val textColor by animateColorAsState(color, tween(320))
     Box(
         Modifier
@@ -950,12 +967,7 @@ private fun LyricRow(
                 color = textColor,
                 maxLines = 1,
                 textAlign = TextAlign.Center,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .graphicsLayer {
-                        scaleX = rowScale
-                        scaleY = rowScale
-                    }
+                modifier = Modifier.fillMaxWidth()
             )
         }
     }

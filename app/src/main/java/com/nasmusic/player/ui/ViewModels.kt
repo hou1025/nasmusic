@@ -118,7 +118,49 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private var scanJob: Job? = null
 
+    // 扫描入库后的歌词/封面预下载：与扫描任务独立，扫描完成才启动，
+    // 重新扫描/清理缓存时可取消。避让播放：缓冲不足时暂停下载。
+    private var prefetchJob: Job? = null
+    private val _prefetch = MutableStateFlow<Pair<Int, Int>?>(null)
+    /** 预下载进度 (已完成, 总数)；null 表示当前没有预下载任务。 */
+    val prefetch: StateFlow<Pair<Int, Int>?> = _prefetch.asStateFlow()
+
     init { refreshPermissions() }
+
+    /**
+     * 扫描完成后批量补齐缺失的歌词/封面。
+     * 遵循用户的自动下载开关；进度通过 prefetch 暴露；给播放让路（缓冲 < 8 秒暂停）。
+     */
+    private fun kickoffMetadataPrefetch() {
+        val settings = settingsState.value
+        if (!settings.autoDownloadLyrics && !settings.autoDownloadCover) return
+        prefetchJob?.cancel()
+        _prefetch.value = 0 to 0
+        prefetchJob = viewModelScope.launch {
+            val prefetcher = container.newMetadataPrefetcher(viewModelScope) { done, total ->
+                _prefetch.value = if (total == 0) null else done to total
+            }
+            prefetcher.start(
+                enableLyrics = settings.autoDownloadLyrics,
+                enableCover = settings.autoDownloadCover,
+                shouldYield = {
+                    val st = player.state.value
+                    // 没在播放，或正在播本地曲目：无需让路；
+                    // 正在播网络曲目且处于缓冲中：暂停预下载，把带宽留给音频
+                    !st.isPlaying || st.currentSong?.isNas != true || !st.buffering
+                }
+                // 预下载写的是数据库；当前播放曲目若正好被补齐，切歌/重新进入时
+                // loadExtras 会重新读库拿到最新 URI，无需跨 ViewModel 主动刷新
+            )
+        }
+    }
+
+    fun cancelPrefetch() {
+        prefetchJob?.cancel()
+        prefetchJob = null
+        _prefetch.value = null
+        emit("已停止后台下载")
+    }
 
     fun refreshPermissions() {
         _permissionGranted.value = ContextCompat.checkSelfPermission(
@@ -140,6 +182,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val count = runCatching { container.musicRepository.scanLocal() }
                 .getOrElse { emit("扫描失败：${friendlyError(it)}"); return@launch }
             emit("扫描完成，共 $count 首本地歌曲")
+            kickoffMetadataPrefetch()
         }
     }
 
@@ -148,6 +191,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val count = runCatching { container.musicRepository.scanFolder(treeUri) }
                 .getOrElse { emit("添加失败：${friendlyError(it)}"); return@launch }
             emit("已从文件夹导入 $count 首歌曲")
+            kickoffMetadataPrefetch()
         }
     }
 
@@ -378,6 +422,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             _scan.value = ScanProgress(message = "扫描完成，共 $count 首")
             emit("${source.name} 扫描完成，共 $count 首")
+            kickoffMetadataPrefetch()
         }
     }
 
@@ -637,6 +682,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     private val coverInFlight = mutableSetOf<String>()
 
     private var sleepJob: Job? = null
+    // 网络曲目切歌时延后加载的附加信息任务（歌词/封面/标签），新切歌时取消上一首的
+    private var extrasJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -646,10 +693,21 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 _lyricsVersion
             ) { song, offset, _ -> song to offset }
                 .collect { (song, offset) ->
-                    // 封面下载先异步启动，与本地歌词/标签读取并行，不拖慢首屏
-                    maybeFetchCover(song)
+                    // 歌词/封面即时加载：本地歌词文件与已缓存封面都是磁盘读取，不抢带宽，
+                    // 必须立刻显示，否则切歌后歌词/封面要等好几秒才出现。
                     loadExtras(song, offset)
-                    maybeAutoFetch(song)
+                    // 网络曲目的在线匹配（搜索/下载）才延后，给音频首块让路；本地曲目即时。
+                    extrasJob?.cancel()
+                    if (song?.isNas == true) {
+                        extrasJob = viewModelScope.launch {
+                            delay(600)
+                            maybeFetchCover(song)
+                            maybeAutoFetch(song)
+                        }
+                    } else {
+                        maybeFetchCover(song)
+                        maybeAutoFetch(song)
+                    }
                 }
         }
     }
@@ -662,7 +720,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         }
         // 重新取一次索引，确保刚下载的 lyricsUri 立即生效
         val current = container.musicRepository.getById(song.id) ?: song
-        val tags = runCatching { readTags(current) }.getOrNull()
+        // 网络曲目不读内嵌标签（那要发 Range 请求抢带宽、拖慢切歌），
+        // 只用同名 .lrc / 已下载的歌词文件；内嵌歌词由后续 extrasJob 补。
+        val tags = if (current.isNas) null else runCatching { readTags(current) }.getOrNull()
         _audioTags.value = tags
         _lyrics.value = runCatching {
             container.lyricsLoader.load(current, tags?.embeddedLyrics, offset)
@@ -849,6 +909,33 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         _lyricCandidates.value = emptyList()
         _lyricsVersion.value++
         if (!silent) _message.emit("歌词已保存：${candidate.title}")
+        // 歌词落盘后顺带把封面也存下来：用户主动下载时不受「自动下载封面」开关限制，
+        // 后台自动下载则遵循开关；封面失败完全静默，不影响歌词已经保存成功。
+        downloadCoverAlongside(song, candidate, respectSetting = silent)
+    }
+
+    /**
+     * 下载歌词时同步保存封面。
+     * - 已有本地封面缓存：直接复用，不重复走网络；
+     * - 候选自带专辑图（网易云）：直接下载该地址，少一次搜索且匹配更准；
+     * - 没有地址：回退到封面双源匹配，并强制重试绕过失败冷却。
+     */
+    private fun downloadCoverAlongside(song: Song, candidate: LyricCandidate, respectSetting: Boolean) {
+        if (respectSetting && !settingsState.value.autoDownloadCover) return
+        container.coverFetcher.cached(song.id)?.let {
+            setCover(song.id, it)
+            return
+        }
+        viewModelScope.launch {
+            val direct = candidate.coverUrl.takeIf { it.isNotBlank() }
+                ?.let { runCatching { container.coverFetcher.fetchFromUrl(song, it) }.getOrNull() }
+            val uri = direct ?: runCatching { container.coverFetcher.fetch(song, force = true) }.getOrNull()
+            if (uri != null) {
+                container.musicRepository.setArtworkUri(song.id, uri)
+                setCover(song.id, uri)
+                if (!respectSetting) _message.emit("封面已随歌词一起保存")
+            }
+        }
     }
 
     fun adjustLyricsOffset(deltaMs: Long) {

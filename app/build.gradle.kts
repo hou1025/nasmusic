@@ -12,8 +12,8 @@ android {
         applicationId = "com.nasmusic.player"
         minSdk = 24
         targetSdk = 35
-        versionCode = 46
-        versionName = "2.3.9"
+        versionCode = 56
+        versionName = "2.3.19"
     }
 
     buildTypes {

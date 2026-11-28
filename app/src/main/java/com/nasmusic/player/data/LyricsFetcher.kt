@@ -47,7 +47,9 @@ data class LyricCandidate(
     val timed: Boolean,
     /** LRCLIB 直接随搜索结果返回歌词；网易云需要二次请求，命中预取后也会写入这里。 */
     val lrc: String? = null,
-    val remoteId: String = ""
+    val remoteId: String = "",
+    /** 网易云搜索结果自带的专辑封面地址：下载歌词时可直接用它取封面，省掉一次搜索。 */
+    val coverUrl: String = ""
 ) {
     val summary: String
         get() = listOf(artist, album).filter { it.isNotBlank() }.joinToString(" · ")
@@ -282,15 +284,18 @@ class LyricsFetcher {
             val artists = o.optJSONArray("artists")
             val artistName = if (artists != null && artists.length() > 0)
                 artists.optJSONObject(0)?.optString("name").orEmpty() else ""
+            val album = o.optJSONObject("album")
             result += LyricCandidate(
                 key = "netease:$id",
                 title = o.optString("name"),
                 artist = artistName,
-                album = o.optJSONObject("album")?.optString("name").orEmpty(),
+                album = album?.optString("name").orEmpty(),
                 durationSec = (o.optLong("duration", 0L) / 1000L).toInt(),
                 source = LyricsSource.NETEASE,
                 timed = true,
-                remoteId = id.toString()
+                remoteId = id.toString(),
+                // 同一条搜索结果里的专辑图：下载歌词时顺带落盘，不额外发一次搜索
+                coverUrl = album?.optString("picUrl")?.takeIf { it.startsWith("http") }.orEmpty()
             )
         }
         // 与搜索在同一个后台任务里顺带取首个候选的歌词：

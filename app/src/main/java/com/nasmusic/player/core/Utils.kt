@@ -35,9 +35,16 @@ fun mimeForName(name: String): String = when (extensionOf(name)) {
     else -> ""
 }
 
-/** nas://<sourceId>/<远程路径> —— 自定义 scheme 交给 NasDataSource 处理。 */
-fun nasUri(sourceId: String, remotePath: String): String =
-    Uri.Builder().scheme("nas").authority(sourceId).path(remotePath).build().toString()
+/**
+ * nas://<sourceId>/<远程路径> —— 自定义 scheme 交给 NasDataSource 处理。
+ * sizeBytes>0 时把文件大小写进 query：播放时数据源直接用它，跳过飞牛 Range 0-0 长度探测，
+ * 这一趟中继请求常要 2~5 秒，是「点播放很久才出声」的主要来源之一。
+ */
+fun nasUri(sourceId: String, remotePath: String, sizeBytes: Long = 0L): String {
+    val builder = Uri.Builder().scheme("nas").authority(sourceId).path(remotePath)
+    if (sizeBytes > 0) builder.appendQueryParameter("sz", sizeBytes.toString())
+    return builder.build().toString()
+}
 
 fun parseNasUri(uriString: String): Pair<String, String>? {
     val uri = Uri.parse(uriString)
@@ -101,6 +108,10 @@ fun friendlyError(t: Throwable, fallback: String = "操作失败"): String {
             else -> "服务器返回错误：HTTP ${t.code}"
         }
         t is IOException && msg.contains("refused", true) -> "NAS 拒绝连接，请检查端口与服务"
+        // 中继/网关提前断开连接：OkHttp 抛出的原始消息是英文，统一翻译为中文
+        msg.contains("connection closed", true) || msg.contains("closed", true) && t is IOException ->
+            "连接失败：与服务器的连接被中断，请检查网络或稍后重试"
+        t is IOException && msg.contains("EOF", true) -> "连接失败：服务器提前断开连接"
         msg.contains("STATUS_ACCESS_DENIED", true) || msg.contains("Access denied", true) -> "账号或密码错误，或无访问权限"
         msg.contains("STATUS_OBJECT_NAME_NOT_FOUND", true) -> "远程路径不存在"
         msg.contains("STATUS_LOGON_FAILURE", true) -> "登录失败，请检查用户名与密码"

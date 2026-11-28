@@ -2,6 +2,17 @@
 
 package com.nasmusic.player.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material3.SmallFloatingActionButton
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -75,6 +86,18 @@ fun LibraryScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavControll
     // 歌曲 Tab 的来源筛选：0=全部 1=网络音乐源 2=本地音乐（旋转/切 Tab 不丢失）
     var songFilter by rememberSaveable { mutableStateOf(0) }
     var group by remember { mutableStateOf<String?>(null) }
+
+    // 所有列表（歌曲/专辑/歌手/文件夹/收藏，以及分组详情）共用一个滚动状态：
+    // 切 Tab、进出分组时统一从顶部开始；底部悬浮按钮和「再点一次当前标签」靠它回顶。
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    // 滚过 8 项才浮出回顶按钮，列表短的时候不打扰视线
+    val showBackToTop by remember {
+        derivedStateOf { listState.firstVisibleItemIndex > 8 }
+    }
+    LaunchedEffect(tab, group, songFilter) {
+        listState.scrollToItem(0)
+    }
     var addTarget by remember { mutableStateOf<Song?>(null) }
     var editTarget by remember { mutableStateOf<Song?>(null) }
     var excludeTarget by remember { mutableStateOf<String?>(null) }
@@ -83,170 +106,200 @@ fun LibraryScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavControll
         ActivityResultContracts.OpenDocumentTree()
     ) { uri -> uri?.let { vm.addFolder(it) } }
 
-    Column(Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text("音乐列表", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "${songs.size} 首 · 已应用时长与文件夹过滤",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            if (progress.running) {
-                CircularProgressIndicator(modifier = Modifier.size(20.dp))
-            }
-            IconButton(onClick = { vm.scanLocal(); connectionVersion++ }) {
-                Icon(Icons.Default.Refresh, contentDescription = "重新扫描并检测网络音源")
-            }
-            IconButton(onClick = { folderLauncher.launch(null) }) {
-                Icon(Icons.Default.Add, contentDescription = "手动添加音乐文件夹")
-            }
-        }
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 12.dp, vertical = 4.dp)
-        ) {
-            LIBRARY_TABS.forEachIndexed { index, title ->
-                val selected = tab == index
-                Surface(
-                    onClick = { tab = index; group = null },
-                    shape = RoundedCornerShape(20.dp),
-                    color = if (selected) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-                    contentColor = if (selected) MaterialTheme.colorScheme.onPrimary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(end = 8.dp)
-                ) {
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("音乐列表", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        title,
-                        style = MaterialTheme.typography.labelLarge,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        "${songs.size} 首 · 已应用时长与文件夹过滤",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-            }
-        }
-
-        val groups: Map<String, List<Song>> = when (tab) {
-            1 -> songs.filter { it.album.isNotBlank() }.groupBy { it.album }
-            2 -> songs.filter { it.artist.isNotBlank() }.groupBy { it.artist }
-            3 -> songs.filter { it.folder.isNotBlank() }.groupBy { it.folder }
-            else -> emptyMap()
-        }
-
-        when {
-            group != null -> {
-                val current = when (tab) {
-                    1 -> songs.filter { it.album == group }
-                    2 -> songs.filter { it.artist == group }
-                    3 -> songs.filter { it.folder == group }
-                    else -> emptyList()
+                if (progress.running) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp))
                 }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                ) {
-                    IconButton(onClick = { group = null }) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "返回分组")
-                    }
-                    Column(Modifier.weight(1f)) {
-                        Text(group.orEmpty(), style = MaterialTheme.typography.titleSmall, maxLines = 1)
+                IconButton(onClick = { vm.scanLocal(); connectionVersion++ }) {
+                    Icon(Icons.Default.Refresh, contentDescription = "重新扫描并检测网络音源")
+                }
+                IconButton(onClick = { folderLauncher.launch(null) }) {
+                    Icon(Icons.Default.Add, contentDescription = "手动添加音乐文件夹")
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 12.dp, vertical = 4.dp)
+            ) {
+                LIBRARY_TABS.forEachIndexed { index, title ->
+                    val selected = tab == index
+                    Surface(
+                        onClick = {
+                            if (selected) {
+                                // 再点一次当前标签 = 快速回到列表顶部（和 iOS 点状态栏同类交互）
+                                scope.launch { listState.animateScrollToItem(0) }
+                            } else {
+                                tab = index
+                                group = null
+                            }
+                        },
+                        shape = RoundedCornerShape(20.dp),
+                        color = if (selected) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                        contentColor = if (selected) MaterialTheme.colorScheme.onPrimary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(end = 8.dp)
+                    ) {
                         Text(
-                            "${current.size} 首",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            title,
+                            style = MaterialTheme.typography.labelLarge,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                         )
                     }
-                    if (tab == 3) {
-                        TextButton(onClick = { excludeTarget = group }) { Text("排除") }
+                }
+            }
+
+            val groups: Map<String, List<Song>> = when (tab) {
+                1 -> songs.filter { it.album.isNotBlank() }.groupBy { it.album }
+                2 -> songs.filter { it.artist.isNotBlank() }.groupBy { it.artist }
+                3 -> songs.filter { it.folder.isNotBlank() }.groupBy { it.folder }
+                else -> emptyMap()
+            }
+
+            when {
+                group != null -> {
+                    val current = when (tab) {
+                        1 -> songs.filter { it.album == group }
+                        2 -> songs.filter { it.artist == group }
+                        3 -> songs.filter { it.folder == group }
+                        else -> emptyList()
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        IconButton(onClick = { group = null }) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "返回分组")
+                        }
+                        Column(Modifier.weight(1f)) {
+                            Text(group.orEmpty(), style = MaterialTheme.typography.titleSmall, maxLines = 1)
+                            Text(
+                                "${current.size} 首",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (tab == 3) {
+                            TextButton(onClick = { excludeTarget = group }) { Text("排除") }
+                        }
+                    }
+                    SongList(
+                        songs = current,
+                        state = state,
+                        vm = vm,
+                        playerVm = playerVm,
+                        onAddToPlaylist = { addTarget = it },
+                        onEditTags = { editTarget = it },
+                        modifier = Modifier.weight(1f),
+                        listState = listState
+                    )
+                }
+                tab in 1..3 -> {
+                    if (groups.isEmpty()) {
+                        Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                            EmptyState("暂无分组，请先扫描音乐")
+                        }
+                    } else {
+                        LazyColumn(Modifier.weight(1f), state = listState) {
+                            items(groups.entries.sortedBy { it.key }, key = { it.key }) { entry ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 2.dp)
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .clickable { group = entry.key }
+                                        .padding(horizontal = 8.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        if (tab == 3) Icons.Default.Folder else Icons.Default.Album,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                    Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                                        Text(
+                                            entry.key,
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            maxLines = 1
+                                        )
+                                        Text(
+                                            "${entry.value.size} 首",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    if (tab == 3) {
+                                        IconButton(onClick = { excludeTarget = entry.key }) {
+                                            Icon(
+                                                Icons.Default.Block,
+                                                contentDescription = "排除并移除该文件夹",
+                                                tint = MaterialTheme.colorScheme.error
+                                            )
+                                        }
+                                    }
+                                    Text("›", style = MaterialTheme.typography.titleLarge)
+                                }
+                            }
+                        }
                     }
                 }
-                SongList(
-                    songs = current,
+                tab == 4 -> SongList(
+                    songs = connectedFavorites,
                     state = state,
                     vm = vm,
                     playerVm = playerVm,
                     onAddToPlaylist = { addTarget = it },
                     onEditTags = { editTarget = it },
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
+                    emptyText = "还没有收藏歌曲",
+                    listState = listState
+                )
+                else -> GroupedSongList(
+                    songs = songs,
+                    filter = songFilter,
+                    onFilterChange = { songFilter = it },
+                    state = state,
+                    vm = vm,
+                    playerVm = playerVm,
+                    onAddToPlaylist = { addTarget = it },
+                    onEditTags = { editTarget = it },
+                    modifier = Modifier.weight(1f),
+                    listState = listState
                 )
             }
-            tab in 1..3 -> {
-                if (groups.isEmpty()) {
-                    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                        EmptyState("暂无分组，请先扫描音乐")
-                    }
-                } else {
-                    LazyColumn(Modifier.weight(1f)) {
-                        items(groups.entries.sortedBy { it.key }, key = { it.key }) { entry ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 2.dp)
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .clickable { group = entry.key }
-                                    .padding(horizontal = 8.dp, vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    if (tab == 3) Icons.Default.Folder else Icons.Default.Album,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                                Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                                    Text(
-                                        entry.key,
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        maxLines = 1
-                                    )
-                                    Text(
-                                        "${entry.value.size} 首",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                if (tab == 3) {
-                                    IconButton(onClick = { excludeTarget = entry.key }) {
-                                        Icon(
-                                            Icons.Default.Block,
-                                            contentDescription = "排除并移除该文件夹",
-                                            tint = MaterialTheme.colorScheme.error
-                                        )
-                                    }
-                                }
-                                Text("›", style = MaterialTheme.typography.titleLarge)
-                            }
-                        }
-                    }
-                }
+        }
+
+        // 长列表滚到底部后回顶很费劲：滚过 8 项就浮出「回到顶部」按钮。
+        // 另外「再点一次当前标签」也能回顶，两种入口覆盖单手/车机两种使用场景。
+        AnimatedVisibility(
+            visible = showBackToTop,
+            enter = fadeIn() + scaleIn(initialScale = 0.85f),
+            exit = fadeOut() + scaleOut(targetScale = 0.85f),
+            modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp)
+        ) {
+            SmallFloatingActionButton(
+                onClick = { scope.launch { listState.animateScrollToItem(0) } },
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+            ) {
+                Icon(Icons.Default.KeyboardArrowUp, contentDescription = "回到顶部")
             }
-            tab == 4 -> SongList(
-                songs = connectedFavorites,
-                state = state,
-                vm = vm,
-                playerVm = playerVm,
-                onAddToPlaylist = { addTarget = it },
-                onEditTags = { editTarget = it },
-                modifier = Modifier.weight(1f),
-                emptyText = "还没有收藏歌曲"
-            )
-            else -> GroupedSongList(
-                songs = songs,
-                filter = songFilter,
-                onFilterChange = { songFilter = it },
-                state = state,
-                vm = vm,
-                playerVm = playerVm,
-                onAddToPlaylist = { addTarget = it },
-                onEditTags = { editTarget = it },
-                modifier = Modifier.weight(1f)
-            )
         }
     }
 
@@ -291,7 +344,8 @@ private fun GroupedSongList(
     playerVm: PlayerViewModel,
     onAddToPlaylist: (Song) -> Unit,
     onEditTags: (Song) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    listState: androidx.compose.foundation.lazy.LazyListState = rememberLazyListState()
 ) {
     if (songs.isEmpty()) {
         Box(modifier, contentAlignment = Alignment.Center) {
@@ -312,7 +366,7 @@ private fun GroupedSongList(
         else -> songs
     }
 
-    LazyColumn(modifier) {
+    LazyColumn(modifier = modifier, state = listState) {
         // 筛选栏放在原「网络音乐源」那一行，三个选项排在一起、可点击切换
         if (hasNetwork) {
             item(key = "source_filter") {
@@ -385,13 +439,14 @@ private fun SongList(
     onAddToPlaylist: (Song) -> Unit,
     onEditTags: (Song) -> Unit,
     modifier: Modifier = Modifier,
-    emptyText: String = "暂无歌曲，请先扫描本地音乐或添加 NAS 音乐源"
+    emptyText: String = "暂无歌曲，请先扫描本地音乐或添加 NAS 音乐源",
+    listState: androidx.compose.foundation.lazy.LazyListState = rememberLazyListState()
 ) {
     if (songs.isEmpty()) {
         Box(modifier, contentAlignment = Alignment.Center) { EmptyState(emptyText) }
         return
     }
-    LazyColumn(modifier) {
+    LazyColumn(modifier = modifier, state = listState) {
         items(songs, key = { it.id }) { song ->
             SongRow(
                 song = song,

@@ -5,6 +5,7 @@ import com.nasmusic.player.data.CoverFetcher
 import com.nasmusic.player.data.LyricsFetcher
 import com.nasmusic.player.data.LyricsLoader
 import com.nasmusic.player.data.LyricsStore
+import com.nasmusic.player.data.MetadataPrefetcher
 import com.nasmusic.player.data.MusicRepository
 import com.nasmusic.player.data.NasCacheManager
 import com.nasmusic.player.data.OnlineMusicApi
@@ -38,6 +39,13 @@ class AppContainer(private val appContext: Context) {
     val lyricsFetcher by lazy { LyricsFetcher() }
     val lyricsStore by lazy { LyricsStore(appContext) }
     val coverFetcher by lazy { CoverFetcher(appContext) }
+    /** 扫描入库后的歌词/封面批量预下载，由 ViewModel 传入 scope 后实例化。 */
+    fun newMetadataPrefetcher(
+        scope: kotlinx.coroutines.CoroutineScope,
+        onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }
+    ) = MetadataPrefetcher(
+        scope, musicRepository, lyricsFetcher, lyricsStore, coverFetcher, onProgress
+    )
     val playbackController by lazy {
         PlaybackController(appContext, musicRepository, nasCache)
     }
