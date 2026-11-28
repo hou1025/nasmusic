@@ -23,8 +23,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -37,6 +38,9 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -50,6 +54,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -63,6 +68,7 @@ import com.nasmusic.player.core.formatSize
 import com.nasmusic.player.data.LyricsSource
 
 @Composable
+@Suppress("UNUSED_PARAMETER")
 fun SettingsScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavController) {
     val settings by vm.settingsState.collectAsStateWithLifecycle()
     val folders by vm.folders.collectAsStateWithLifecycle()
@@ -73,9 +79,11 @@ fun SettingsScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavControl
     var limit by remember(settings.cacheLimitMb) { mutableStateOf(settings.cacheLimitMb.toFloat()) }
     var threshold by remember(settings.minDurationSec) { mutableStateOf(settings.minDurationSec.toFloat()) }
     var manualRule by remember { mutableStateOf("") }
-    // 两个文件夹列表都默认折叠，避免规则很多时把设置页撑得很长
-    var foldersExpanded by remember { mutableStateOf(false) }
-    var excludedExpanded by remember { mutableStateOf(false) }
+    // 两个文件夹列表都默认折叠，避免规则很多时把设置页撑得很长；折叠状态旋转后保留
+    var foldersExpanded by rememberSaveable { mutableStateOf(false) }
+    var excludedExpanded by rememberSaveable { mutableStateOf(false) }
+    var confirmPurge by remember { mutableStateOf(false) }
+    var confirmClearCache by remember { mutableStateOf(false) }
 
     val folderLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
@@ -95,7 +103,49 @@ fun SettingsScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavControl
             modifier = Modifier.padding(start = 4.dp, top = 6.dp, bottom = 2.dp)
         )
 
-        SectionCard("主题外观", Icons.Default.Palette) {
+        // 音效中心入口（蝰蛇 / 车载），独立页面承载完整调音面板
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 6.dp)
+                .clickable { nav.navigate("soundEffect") { launchSingleTop = true } },
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+            )
+        ) {
+            Row(
+                Modifier.fillMaxWidth().padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Default.GraphicEq,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(24.dp)
+                )
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("音效中心", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        when (settings.soundMode) {
+                            "VIPER" -> "蝰蛇音效 · ${com.nasmusic.player.core.ViperPreset.from(settings.viperPreset).label}"
+                            "CAR" -> "车载音效 · ${com.nasmusic.player.core.CarPreset.from(settings.carPreset).label}"
+                            else -> "蝰蛇音效 / 车载音效 · 当前原生直通"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Icon(
+                    Icons.Default.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        SectionCard("主题外观", Icons.Default.Palette, collapsible = true) {
             val dark = LocalIsDarkTheme.current
             val activeKey = LocalThemePaletteKey.current
             val currentMode = ThemeMode.fromKey(settings.themeMode)
@@ -211,12 +261,12 @@ fun SettingsScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavControl
             ) { Text("清空封面缓存") }
         }
 
-        SectionCard("常规行为", Icons.Default.Settings) {
+        SectionCard("常规行为", Icons.Default.Settings, collapsible = true) {
             SettingSwitchRow("启动时自动扫描本地音乐", checked = settings.autoScanOnStart) { vm.setAutoScan(it) }
             SettingSwitchRow("播放记忆", "恢复上次队列与播放位置", settings.restorePlayback) { vm.setRestorePlayback(it) }
         }
 
-        SectionCard("扫描过滤（短音频 / 排除文件夹）", Icons.Default.Tune) {
+        SectionCard("扫描过滤（短音频 / 排除文件夹）", Icons.Default.Tune, collapsible = true) {
             Text(
                 "最短时长：${threshold.toInt()} 秒",
                 style = MaterialTheme.typography.bodyMedium
@@ -356,7 +406,7 @@ fun SettingsScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavControl
             }
 
             Row(modifier = Modifier.padding(top = 8.dp)) {
-                OutlinedButton(onClick = { vm.purgeFiltered() }) { Text("立即清理") }
+                OutlinedButton(onClick = { confirmPurge = true }) { Text("立即清理") }
                 OutlinedButton(
                     onClick = { vm.rescanAfterRestore() },
                     modifier = Modifier.padding(start = 8.dp)
@@ -368,7 +418,7 @@ fun SettingsScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavControl
             )
         }
 
-        SectionCard("音乐列表", Icons.Default.LibraryMusic) {
+        SectionCard("音乐列表", Icons.Default.LibraryMusic, collapsible = true) {
             Row {
                 OutlinedButton(onClick = { vm.scanLocal() }, modifier = Modifier.weight(1f)) {
                     Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -388,11 +438,10 @@ fun SettingsScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavControl
             )
         }
 
-        SectionCard("网络音乐源（NAS）", Icons.Default.Cloud) {
-            NasSourcesSection(vm, nav)
-        }
+        // 网络音乐源入口已上移到首页顶栏（竖屏）与发现页顶部 Tab（横屏），
+        // 设置页不再重复展示，避免多音源入口分散。
 
-        SectionCard("在线歌词", Icons.Default.MusicNote) {
+        SectionCard("在线歌词", Icons.Default.MusicNote, collapsible = true) {
             SettingSwitchRow(
                 "自动下载歌词",
                 "缺少歌词时自动匹配并保存到本机",
@@ -443,7 +492,7 @@ fun SettingsScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavControl
             ) { Text("清除已下载歌词") }
         }
 
-        SectionCard("NAS 缓存（LRU）", Icons.Default.Storage) {
+        SectionCard("NAS 缓存（LRU）", Icons.Default.Storage, collapsible = true) {
             Text("缓存上限：${limit.toInt()} MB", style = MaterialTheme.typography.bodyMedium)
             Slider(
                 value = limit,
@@ -457,7 +506,7 @@ fun SettingsScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavControl
             )
             InfoText("已缓存 ${cacheInfo.first} 首 · ${formatSize(cacheInfo.second)}（不写入系统媒体库）")
             Row(Modifier.padding(top = 8.dp)) {
-                OutlinedButton(onClick = { vm.clearCache(); cacheVersion++ }) { Text("清空缓存") }
+                OutlinedButton(onClick = { confirmClearCache = true }) { Text("清空缓存") }
                 OutlinedButton(
                     onClick = { playerVm.cacheQueue() },
                     modifier = Modifier.padding(start = 8.dp)
@@ -465,7 +514,7 @@ fun SettingsScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavControl
             }
         }
 
-        SectionCard("睡眠定时器", Icons.Default.Timer) {
+        SectionCard("睡眠定时器", Icons.Default.Timer, collapsible = true) {
             if (sleepRemaining > 0) {
                 Text("剩余 ${formatDuration(sleepRemaining)}", style = MaterialTheme.typography.bodyMedium)
             }
@@ -480,7 +529,7 @@ fun SettingsScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavControl
             }
         }
 
-        SectionCard("关于", Icons.Default.Info) {
+        SectionCard("关于", Icons.Default.Info, collapsible = true) {
             InfoText("支持格式：${AUDIO_EXTENSIONS.sorted().joinToString(", ").uppercase()}")
             InfoText(
                 "Kotlin · Compose · MVVM · Room · Media3 · SMBJ · OkHttp",
@@ -489,6 +538,36 @@ fun SettingsScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavControl
             InfoText("v2.1.2 · 轻量 · 无广告 · 支持车机/平板双栏", Modifier.padding(top = 4.dp))
         }
         Spacer(Modifier.height(12.dp))
+    }
+
+    if (confirmPurge) {
+        AlertDialog(
+            onDismissRequest = { confirmPurge = false },
+            title = { Text("立即清理曲库") },
+            text = { Text("将按当前的时长阈值与排除规则，从应用曲库索引中移除匹配的歌曲。手机 / NAS 上的原文件不会被删除。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.purgeFiltered()
+                    confirmPurge = false
+                }) { Text("清理", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { confirmPurge = false }) { Text("取消") } }
+        )
+    }
+    if (confirmClearCache) {
+        AlertDialog(
+            onDismissRequest = { confirmClearCache = false },
+            title = { Text("清空缓存") },
+            text = { Text("将删除已缓存的 NAS 歌曲音频，之后再次播放需要重新联网下载。此操作不会影响曲库索引。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.clearCache()
+                    cacheVersion++
+                    confirmClearCache = false
+                }) { Text("清空", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { confirmClearCache = false }) { Text("取消") } }
+        )
     }
 }
 

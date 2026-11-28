@@ -1,33 +1,11 @@
-# 本地 SDK 路径（含本机绝对路径，切勿提交）
-local.properties
-
-# Gradle / 构建产物
-.gradle/
-build/
-app/build/
-*.gradle
-!gradle/wrapper/gradle-wrapper.jar
-!*.gradle.kts
-.gradletasknamecache
-
-# IDE
-.idea/
 *.iml
-*.ipr
-*.iws
-
-# 系统 / 临时文件
+.gradle
+/local.properties
+/.idea
 .DS_Store
-Thumbs.db
-*.swp
-*~
-
-# 签名与密钥
-*.jks
-*.keystore
-*.pepk
-keystore.properties
-
-# 本地工作区数据（非项目源码）
-.workbuddy/
-
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+/g

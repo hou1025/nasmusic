@@ -8,6 +8,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -56,7 +58,11 @@ fun nasBrowserRoute(sourceId: String, path: String): String =
     "nasBrowser/$sourceId?path=${Uri.encode(path)}"
 
 @Composable
-fun AppRoot(vm: MainViewModel, openPlayer: Boolean) {
+fun AppRoot(
+    vm: MainViewModel,
+    openPlayer: Boolean,
+    onConsumeOpenPlayer: () -> Unit = {}
+) {
     val nav = rememberNavController()
     val playerVm: PlayerViewModel = viewModel()
     val playState by playerVm.state.collectAsStateWithLifecycle()
@@ -89,10 +95,12 @@ fun AppRoot(vm: MainViewModel, openPlayer: Boolean) {
     val metrics = LocalCarMetrics.current
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-    // 平板（含小尺寸平板）横竖屏都用双栏：smallestScreenWidthDp 是设备级属性，旋转不变
-    val isTablet = configuration.smallestScreenWidthDp >= 600
-    // 双栏发现页适用范围：车机 / 平板（任意朝向）/ 手机横屏。纯手机竖屏保持原播放页。
-    val useDiscover = metrics.enabled || isTablet || isLandscape
+    // 是否使用双栏发现页，必须以「当前朝向」为准：
+    //  - 真车机固定横屏（metrics.enabled=true），天然一直是双栏；
+    //  - 手机 / 平板 / 折叠屏随旋转切换：横屏 discover 双栏，竖屏 player 单页。
+    // 注意：不能把 smallestScreenWidthDp >= 600（设备级属性，旋转不变）算进来，
+    // 否则平板 / 折叠屏在竖屏时 useDiscover 恒为 true，会一直卡在横屏双栏。
+    val useDiscover = metrics.enabled || isLandscape
     val showSearchBar = route in CONTENT_ROUTES
 
     // startDestination 只在首次组合计算一次并冻结。Activity 声明了 configChanges，旋转不重建，
@@ -102,30 +110,58 @@ fun AppRoot(vm: MainViewModel, openPlayer: Boolean) {
 
     // 通知/外部「打开播放器」：冷启动由 startDestination 保证；热启动 onNewIntent 时在此跳转。
     LaunchedEffect(openPlayer) {
-        if (openPlayer && nav.currentBackStackEntry?.destination?.route != "player") {
-            nav.navigate("player") { launchSingleTop = true }
+        if (openPlayer) {
+            if (nav.currentBackStackEntry?.destination?.route != "player") {
+                nav.navigate("player") { launchSingleTop = true }
+            }
+            // 消费后复位：否则下次从通知打开同一个 intent 时 openPlayer 仍为 true，
+            // 会把用户从当前页面强行踢回播放页
+            onConsumeOpenPlayer()
+            // 横屏从通知冷启动：startDestination 因 openPlayer 冻结在 player，
+            // 而方向 effect 首帧因 openPlayer 保护跳过、之后 useDiscover 不再变化，
+            // 会永远卡在单页。这里消费后主动对齐一次：横屏切到 discover 双栏（左侧仍是播放卡片），
+            // 竖屏保持 player。只处理主路由，不打断二级页面。
+            val current = nav.currentBackStackEntry?.destination?.route
+            val target = if (useDiscover) "discover" else "player"
+            if ((current == null || current == "player" || current == "discover") && current != target) {
+                nav.navigate(target) {
+                    launchSingleTop = true
+                    if (current != null) popUpTo(current) { inclusive = true }
+                }
+            }
         }
     }
 
-    // 旋转/分屏导致方向变化时切换主页面。首帧跳过，避免覆盖 startDestination 的 openPlayer 决策
-    // （横屏从通知冷启动时若不做此保护，会被立刻踢回 discover）。
+    // 方向变化后把主路由对齐到当前朝向：横屏用 discover 双栏，竖屏用 player 单栏。
+    //
+    // 修复「切换时一直卡在横屏」：
+    //  1) useDiscover 不再掺入设备级的 isTablet，平板 / 折叠屏竖屏也能切回 player。
+    //  2) 首帧也做一次对齐（原实现无条件跳过），避免「横屏启动 → 直接竖屏」时
+    //     startDestination 冻结在 discover 又没有后续旋转事件，导致一直卡在横屏双栏。
+    //     仅从通知冷启动进 player（openPlayer=true）时尊重该决策、不做对齐。
+    //  3) 切换时用 popUpTo 清掉来回旋转堆积的 player/discover，返回键直接退出而不是
+    //     回到另一朝向的布局。
     val firstOrientationPass = remember { mutableStateOf(true) }
-    LaunchedEffect(isLandscape, isTablet, metrics.enabled) {
+    LaunchedEffect(useDiscover) {
         if (firstOrientationPass.value) {
             firstOrientationPass.value = false
-            return@LaunchedEffect
+            // 横屏从通知冷启动：startDestination 已是 player，不要首帧就踢回 discover
+            if (openPlayer) return@LaunchedEffect
         }
-        // 仅纯手机、且当前正处于 player/discover 主路由时才切换，绝不打断二级页面。
-        if (!metrics.enabled && !isTablet) {
-            val current = nav.currentBackStackEntry?.destination?.route
-            val target = if (isLandscape) "discover" else "player"
-            if ((current == "player" || current == "discover") && current != target) {
-                nav.navigate(target) { launchSingleTop = true }
+        // 只在 player/discover 主路由之间切换，绝不打断登录、浏览、歌单等二级页面。
+        val current = nav.currentBackStackEntry?.destination?.route
+        val target = if (useDiscover) "discover" else "player"
+        if ((current == null || current == "player" || current == "discover") && current != target) {
+            nav.navigate(target) {
+                launchSingleTop = true
+                // 清理切换中堆积的主路由，返回键直接退出而不是回到另一朝向的布局
+                if (current != null) popUpTo(current) { inclusive = true }
             }
         }
     }
     val showMiniPlayer = playState.currentSong != null &&
-        route != "player" && route != "discover" && !route.startsWith("fnosLogin")
+        route != "player" && route != "discover" &&
+        !route.startsWith("fnosLogin") && !route.startsWith("onlineSourceLogin")
     // 列表/设置页的搜索结果浮层：返回键先清空搜索，不直接退出页面
     BackHandler(enabled = query.isNotBlank() && showSearchBar) { vm.setQuery("") }
 
@@ -196,11 +232,43 @@ fun AppRoot(vm: MainViewModel, openPlayer: Boolean) {
                         startDestination = startDestination,
                         modifier = Modifier
                             .fillMaxHeight()
+                            // 必须撑满可用宽度：否则 NavHost 退化为 wrap-content，
+                            // PlayerScreen 的 fillMaxSize 会把顶栏 Row 撑到 4000dp，
+                            // 手机可视区正好落在中间的 Spacer 空白段，导致整排顶栏按钮消失。
+                            .fillMaxWidth()
                             .widthIn(max = if (route == "player" || route == "discover") 4000.dp else metrics.listMaxWidth)
                     ) {
                         composable("library") { LibraryScreen(vm, playerVm, nav) }
                         composable("discover") { DiscoverScreen(vm, playerVm, nav) }
                         composable("settings") { SettingsScreen(vm, playerVm, nav) }
+                        composable("soundEffect") {
+                            if (useDiscover) {
+                                // 横屏/车机/大屏：音效内嵌在双栏发现页右栏，左侧播放卡片常驻不消失
+                                DiscoverScreen(
+                                    vm, playerVm, nav,
+                                    startInSound = true,
+                                    soundExit = { nav.popBackStack() }
+                                )
+                            } else {
+                                SoundEffectScreen(vm, onBack = { nav.popBackStack() })
+                            }
+                        }
+                        // 独立的网络音乐源页：竖屏首页顶栏云朵按钮直达；
+                        // 横屏仍在发现页顶部 Tab 内嵌展示，不走此路由。
+                        composable("nasSources") {
+                            Column(Modifier.fillMaxSize().statusBarsPadding()) {
+                                SimpleTopBar(title = "网络音乐源", onBack = { nav.popBackStack() })
+                                Column(
+                                    Modifier
+                                        .weight(1f)
+                                        .fillMaxWidth()
+                                        .verticalScroll(rememberScrollState())
+                                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                                ) {
+                                    NasSourcesSection(vm, nav)
+                                }
+                            }
+                        }
                         composable("player") {
                             PlayerScreen(
                                 vm, playerVm,
@@ -211,6 +279,8 @@ fun AppRoot(vm: MainViewModel, openPlayer: Boolean) {
                                     }
                                 },
                                 onOpenLibrary = { nav.navigate("library") { launchSingleTop = true } },
+                                onOpenSources = { nav.navigate("nasSources") { launchSingleTop = true } },
+                                onOpenSound = { nav.navigate("soundEffect") { launchSingleTop = true } },
                                 onOpenSettings = { nav.navigate("settings") { launchSingleTop = true } }
                             )
                         }
@@ -238,7 +308,9 @@ fun AppRoot(vm: MainViewModel, openPlayer: Boolean) {
                             NasBrowserScreen(
                                 vm, playerVm,
                                 sourceId = args?.getString("sourceId").orEmpty(),
-                                path = Uri.decode(args?.getString("path").orEmpty()),
+                                // Navigation 的 StringType 参数取出时已经解码一次，
+                                // 这里再 decode 会破坏名字里含 % 的路径（#17）
+                                path = args?.getString("path").orEmpty(),
                                 onBack = { nav.popBackStack() },
                                 onOpenFolder = { newPath ->
                                     nav.navigate(
@@ -257,6 +329,22 @@ fun AppRoot(vm: MainViewModel, openPlayer: Boolean) {
                             )
                         ) { entry ->
                             FnosLoginScreen(
+                                vm = vm,
+                                sourceId = entry.arguments?.getString("sourceId").orEmpty(),
+                                onBack = { nav.popBackStack() },
+                                onDone = { nav.popBackStack() }
+                            )
+                        }
+                        composable(
+                            route = "onlineSourceLogin?sourceId={sourceId}",
+                            arguments = listOf(
+                                navArgument("sourceId") {
+                                    type = NavType.StringType
+                                    defaultValue = ""
+                                }
+                            )
+                        ) { entry ->
+                            OnlineSourceLoginScreen(
                                 vm = vm,
                                 sourceId = entry.arguments?.getString("sourceId").orEmpty(),
                                 onBack = { nav.popBackStack() },

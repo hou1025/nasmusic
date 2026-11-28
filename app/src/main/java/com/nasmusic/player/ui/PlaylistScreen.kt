@@ -15,12 +15,13 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.QueueMusic
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,6 +44,7 @@ fun PlaylistScreen(
     val playlists by vm.playlists.collectAsStateWithLifecycle()
     var showCreate by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<Playlist?>(null) }
+    var deleteTarget by remember { mutableStateOf<Playlist?>(null) }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -88,7 +90,7 @@ fun PlaylistScreen(
                         IconButton(onClick = { renameTarget = playlist }) {
                             Icon(Icons.Default.Edit, contentDescription = "重命名")
                         }
-                        IconButton(onClick = { vm.deletePlaylist(playlist.id) }) {
+                        IconButton(onClick = { deleteTarget = playlist }) {
                             Icon(Icons.Default.Delete, contentDescription = "删除")
                         }
                     }
@@ -106,6 +108,20 @@ fun PlaylistScreen(
             onDismiss = { renameTarget = null }
         )
     }
+    deleteTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("删除播放列表") },
+            text = { Text("确定删除「${target.name}」？其中的歌曲不会从音乐库中删除。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.deletePlaylist(target.id)
+                    deleteTarget = null
+                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } }
+        )
+    }
 }
 
 @Composable
@@ -118,7 +134,7 @@ fun PlaylistDetailScreen(
     val playlists by vm.playlists.collectAsStateWithLifecycle()
     val playlist = playlists.find { it.id == playlistId }
     val flow = remember(playlistId) { vm.playlistSongs(playlistId) }
-    val songs by flow.collectAsState(initial = emptyList())
+    val songs by flow.collectAsStateWithLifecycle(initialValue = emptyList())
     val state by playerVm.state.collectAsStateWithLifecycle()
     var showAdd by remember { mutableStateOf(false) }
     var addTarget by remember { mutableStateOf<Song?>(null) }

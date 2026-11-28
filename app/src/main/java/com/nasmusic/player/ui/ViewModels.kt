@@ -7,6 +7,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.nasmusic.player.core.AppContainer
+import com.nasmusic.player.core.ViperModules
+import com.nasmusic.player.core.toEqString
 import com.nasmusic.player.core.NasSource
 import com.nasmusic.player.core.ScanProgress
 import com.nasmusic.player.core.SettingsState
@@ -48,6 +50,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
 
+/**
+ * 统一的「可播放歌曲」过滤口径：本地歌曲永远可见；网络歌曲只有在对应音源
+ * 探测为连通时才显示。收藏 / 搜索 / 随机漫游等派生列表都必须套用同一函数，
+ * 否则断连音源里的歌曲点开必然播放失败（歌曲 Tab 已按此口径过滤）。
+ */
+fun List<Song>.filterConnected(connectionStatus: Map<String, Boolean>): List<Song> =
+    filter { !it.isNas || connectionStatus[it.sourceId] == true }
+
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val context: Context = app.applicationContext
     private val container = AppContainer.get(app)
@@ -81,10 +91,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _query = MutableStateFlow("")
     val query: StateFlow<String> = _query.asStateFlow()
-    val searchResults: StateFlow<List<Song>> = _query
-        .flatMapLatest { q ->
+    val searchResults: StateFlow<List<Song>> = combine(
+        _query.flatMapLatest { q ->
             if (q.isBlank()) flowOf(emptyList()) else container.musicRepository.search(q)
-        }
+        },
+        _nasConnectionStatus
+    ) { results, status -> results.filterConnected(status) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     private val _scan = MutableStateFlow(ScanProgress())
@@ -92,6 +104,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _permissionGranted = MutableStateFlow(false)
     val permissionGranted: StateFlow<Boolean> = _permissionGranted.asStateFlow()
+
+    // 登录/测试连接的 busy 状态由 ViewModel 持有：页面退出不会取消协程，也不会因状态无处复位而卡住按钮
+    private val _fnosLoginBusy = MutableStateFlow(false)
+    val fnosLoginBusy: StateFlow<Boolean> = _fnosLoginBusy.asStateFlow()
+    private val _onlineTestBusy = MutableStateFlow(false)
+    val onlineTestBusy: StateFlow<Boolean> = _onlineTestBusy.asStateFlow()
+    private val _onlineSaveBusy = MutableStateFlow(false)
+    val onlineSaveBusy: StateFlow<Boolean> = _onlineSaveBusy.asStateFlow()
 
     private val _message = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val message: SharedFlow<String> = _message.asSharedFlow()
@@ -162,8 +182,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun toggleFavorite(song: Song) {
         viewModelScope.launch {
-            container.musicRepository.setFavorite(song.id, !song.isFavorite)
-            emit(if (song.isFavorite) "已取消收藏" else "已加入收藏")
+            val favorite = runCatching { container.musicRepository.toggleFavorite(song.id) }
+                .getOrElse { emit("操作失败：${friendlyError(it)}"); return@launch }
+            // 列表与播放页里的 Song 都是数据库快照，写库后不会自己变；
+            // 通知播放器重读当前曲目/队列，心形图标才会立刻跟着变。
+            container.playbackController.reloadCurrentSong()
+            emit(if (favorite) "已加入收藏" else "已取消收藏")
         }
     }
 
@@ -212,6 +236,69 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 飞牛登录在 ViewModel 作用域执行：退出登录页不会取消登录，busy 由这里统一复位。
+     * 成功时顺带保存音源并启动曲库同步，再通过回调通知页面收尾。
+     */
+    fun loginFnosAndWait(
+        sourceId: String,
+        host: String,
+        username: String,
+        password: String,
+        onResult: (Result<String>) -> Unit
+    ) {
+        viewModelScope.launch {
+            _fnosLoginBusy.value = true
+            try {
+                val result = loginFnos(sourceId, host, username, password)
+                result.onSuccess { baseUrl ->
+                    val uri = Uri.parse(baseUrl)
+                    val source = NasSource(
+                        id = sourceId,
+                        name = "飞牛音乐",
+                        type = SourceType.FNOS,
+                        host = uri.host.orEmpty(),
+                        port = if (uri.port > 0) uri.port else 0,
+                        baseUrl = baseUrl,
+                        username = username.trim(),
+                        lastScanAt = nasSources.value.find { it.id == sourceId }?.lastScanAt ?: 0L
+                    )
+                    addFnosSource(source, password)
+                }
+                withContext(Dispatchers.Main) { onResult(result) }
+            } finally {
+                _fnosLoginBusy.value = false
+            }
+        }
+    }
+
+    /** 在线音乐源（Subsonic 兼容）连接测试，见 ui/OnlineSourceLoginScreen.kt。 */
+    suspend fun testOnlineSource(
+        baseUrl: String,
+        username: String,
+        password: String
+    ): Result<String> = withContext(Dispatchers.IO) {
+        container.onlineApi.testConnection(baseUrl, username, password)
+    }
+
+    /** 测试连接在 VM 作用域执行，页面退出不取消，busy 必定复位。 */
+    fun testOnlineSourceAsync(
+        baseUrl: String,
+        username: String,
+        password: String,
+        onResult: (Result<String>) -> Unit
+    ) {
+        viewModelScope.launch {
+            _onlineTestBusy.value = true
+            try {
+                val result = testOnlineSource(baseUrl, username, password)
+                withContext(Dispatchers.Main) { onResult(result) }
+            } finally {
+                _onlineTestBusy.value = false
+            }
+        }
+    }
+
     /** 保存飞牛源后立即同步曲库，避免用户还要手动点一次扫描。 */
     fun addFnosSource(source: NasSource, password: String) {
         viewModelScope.launch {
@@ -223,11 +310,40 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private suspend fun persistNasSource(source: NasSource, password: String?) {
+        container.nasRepository.save(source, password)
+    }
+
     fun saveNasSource(source: NasSource, password: String?) {
         viewModelScope.launch {
-            runCatching { container.nasRepository.save(source, password) }
+            runCatching { persistNasSource(source, password) }
                 .onFailure { emit("保存失败：${friendlyError(it)}"); return@launch }
             emit("网络音乐源已保存")
+        }
+    }
+
+    /** 在线音乐源保存并立即扫描入库（与「保存网络源」共用同一持久化路径）。 */
+    fun saveOnlineSourceAndScan(
+        source: NasSource,
+        password: String,
+        onResult: (Result<Unit>) -> Unit
+    ) {
+        viewModelScope.launch {
+            _onlineSaveBusy.value = true
+            try {
+                val saved = runCatching { persistNasSource(source, password) }
+                if (saved.isFailure) {
+                    val e = saved.exceptionOrNull()!!
+                    emit("保存失败：${friendlyError(e)}")
+                    withContext(Dispatchers.Main) { onResult(Result.failure(e)) }
+                    return@launch
+                }
+                scanNasSource(source)
+                emit("${source.name} 已添加，正在同步曲库…")
+                withContext(Dispatchers.Main) { onResult(Result.success(Unit)) }
+            } finally {
+                _onlineSaveBusy.value = false
+            }
         }
     }
 
@@ -292,7 +408,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------- 设置 / 缓存 ----------
-    fun setDarkMode(value: Boolean) = viewModelScope.launch { container.settings.setDarkMode(value) }
     fun setThemePalette(value: String) = viewModelScope.launch { container.settings.setThemePalette(value) }
     fun setThemeMode(value: String) = viewModelScope.launch { container.settings.setThemeMode(value) }
     fun setScheduleHours(start: Int, end: Int) = viewModelScope.launch {
@@ -306,6 +421,36 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setAutoDownloadLyrics(value: Boolean) = viewModelScope.launch { container.settings.setAutoDownloadLyrics(value) }
     fun setArtworkTint(value: Boolean) = viewModelScope.launch { container.settings.setArtworkTint(value) }
     fun setAutoDownloadCover(value: Boolean) = viewModelScope.launch { container.settings.setAutoDownloadCover(value) }
+
+    // ---------- 音效（蝰蛇 / 车载）----------
+    /** 切换音效模式后，若当前在车机宽屏且开启自动切换，车载模式会被优先采用。 */
+    fun setSoundMode(value: String) = viewModelScope.launch { container.settings.setSoundMode(value) }
+    fun setViperPreset(value: String) = viewModelScope.launch { container.settings.setViperPreset(value) }
+    fun setCarPreset(value: String) = viewModelScope.launch { container.settings.setCarPreset(value) }
+    fun setSoundCustomEq(values: IntArray) = viewModelScope.launch {
+        container.settings.setSoundCustomEq(values.toEqString())
+    }
+    fun setSoundBass(value: Int) = viewModelScope.launch { container.settings.setSoundBass(value) }
+    fun setSoundClarity(value: Int) = viewModelScope.launch { container.settings.setSoundClarity(value) }
+    fun setSoundSurround(value: Int) = viewModelScope.launch { container.settings.setSoundSurround(value) }
+    fun setSoundReverb(value: Int) = viewModelScope.launch { container.settings.setSoundReverb(value) }
+    fun setSoundLoudness(value: Int) = viewModelScope.launch { container.settings.setSoundLoudness(value) }
+    fun setViperModule(module: Int, enabled: Boolean) = viewModelScope.launch {
+        val current = container.settings.snapshot().viperModules
+        container.settings.setViperModules(if (enabled) current or module else current and module.inv())
+    }
+    fun setCarSeat(value: String) = viewModelScope.launch { container.settings.setCarSeat(value) }
+    fun setCarNoise(value: String) = viewModelScope.launch { container.settings.setCarNoise(value) }
+    fun setCarDucking(value: Boolean) = viewModelScope.launch { container.settings.setCarDucking(value) }
+    fun setCarAutoEnable(value: Boolean) = viewModelScope.launch { container.settings.setCarAutoEnable(value) }
+    /** 恢复音效全部参数为默认直通。 */
+    fun resetSoundEffect() = viewModelScope.launch {
+        container.settings.resetSoundEffect()
+        emit("音效已恢复默认")
+    }
+    /** 检测设备是否安装了 ViPER4Android（提示用户避免双重叠加）。 */
+    fun isViperInstalled(): Boolean =
+        com.nasmusic.player.playback.AudioEffectChain(context).isViperInstalled()
 
     /** 清掉在线封面缓存，之后按需要重新匹配。 */
     fun clearCoverCache() {
@@ -369,7 +514,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearCache() {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { container.nasCache.clear() }
+            // 保留正在播放那首的缓存文件，否则清完缓存的瞬间播放就断了
+            val keepId = player.state.value.currentSong?.id
+            withContext(Dispatchers.IO) { container.nasCache.clear(keepId) }
+            // 队列里其它曲目原先指向已被删除的 file:// 文件，重建成在线 URI，切换时才不会报错
+            player.refreshQueueUris()
             emit("缓存已清空")
         }
     }
@@ -416,7 +565,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         // 用最短路径做一次真实目录读取，验证网络 + 凭据都可用。
                         // FNOS 的 listDir 只在根目录真正请求接口，其它路径会直接返回空，
                         // 因此统一探测根目录，避免「假连通」。
-                        val probePath = if (source.type == SourceType.FNOS) "/" else source.rootPath
+                        val probePath = if (source.type == SourceType.FNOS ||
+                            source.type == SourceType.ONLINE
+                        ) "/" else source.rootPath
                         browseNas(source.id, probePath)
                         true
                     }.getOrDefault(false)
@@ -538,6 +689,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun playSongs(songs: List<Song>, startIndex: Int = 0) = container.playbackController.playSongs(songs, startIndex)
     fun playSong(song: Song) = container.playbackController.playSong(song)
     fun addToQueue(songs: List<Song>) = container.playbackController.addToQueue(songs)
+    /** 「下一首播放」：在当前项之后插入，而不是追加到队尾（内核组需实现 PlaybackController.playNext）。 */
+    fun playNext(songs: List<Song>) = container.playbackController.playNext(songs)
     fun playPause() = container.playbackController.playPause()
     fun next() = container.playbackController.next()
     fun previous() = container.playbackController.previous()
@@ -708,7 +861,12 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun toggleFavorite(song: Song) {
         viewModelScope.launch {
-            container.musicRepository.setFavorite(song.id, !song.isFavorite)
+            val favorite = runCatching { container.musicRepository.toggleFavorite(song.id) }
+                .getOrElse { _message.emit("操作失败：${friendlyError(it)}"); return@launch }
+            // song 来自 state.currentSong 快照，不主动重读的话心形图标会一直保持旧状态，
+            // 只有切歌/重启后才"突然变对"。这里写库后立刻刷新当前曲目与队列。
+            container.playbackController.reloadCurrentSong()
+            _message.emit(if (favorite) "已加入收藏" else "已取消收藏")
         }
     }
 
@@ -747,8 +905,19 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 remaining -= 1000L
             }
             _sleepRemainingMs.value = 0L
-            container.playbackController.playPause()
-            _message.emit("睡眠定时器结束，已暂停播放")
+            // playPause() 是 toggle 语义：播放中→暂停，暂停中→播放。若倒计时内用户
+            // 已手动暂停，到点直接 toggle 会反过来「开始播放」。这里用 state 的
+            // isPlaying 先判定：只有确实在播放时才切换（此时切换即暂停），已暂停则
+            // 什么都不做，从而保证「到点只暂停、绝不开始播放」。
+            // 注：PlaybackController 未对外暴露 pause() 或 MediaController，state
+            // 是本类唯一可用的播放状态来源，故采用该守卫方式。
+            if (state.value.isPlaying) {
+                container.playbackController.playPause()
+                _message.emit("睡眠定时器结束，已暂停播放")
+            } else {
+                // 已暂停/未播放时不做任何操作，文案也不要谎报"已暂停"
+                _message.emit("睡眠定时器结束")
+            }
         }
     }
 

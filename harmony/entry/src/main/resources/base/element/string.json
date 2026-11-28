@@ -1,0 +1,20 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "NasMusic 鸿蒙端主模块"
+    },
+    {
+      "name": "app_name",
+      "value": "NasMusic"
+    },
+    {
+      "name": "entry_ability_desc",
+      "value": "NasMusic 音乐播放器入口"
+    },
+    {
+      "name": "read_media_reason",
+      "value": "用于扫描本机音频文件并加入音乐库"
+    }
+  ]
+}

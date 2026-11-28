@@ -1,6 +1,5 @@
 package com.nasmusic.player.ui
 
-import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -37,6 +36,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -53,12 +53,9 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.nasmusic.player.core.NasSource
-import com.nasmusic.player.core.SourceType
 import com.nasmusic.player.core.friendlyError
 import com.nasmusic.player.data.FnosApi
 import kotlinx.coroutines.launch
-import java.util.UUID
 
 private val FnosRed = Color(0xFFFA2D48)
 private val FnosDeep = Color(0xFFB3132B)
@@ -81,7 +78,10 @@ fun FnosLoginScreen(
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
-    var busy by remember { mutableStateOf(false) }
+    // busy 归 ViewModel 管：退出页面不会取消登录，失败/成功都会复位按钮
+    val busy by vm.fnosLoginBusy.collectAsStateWithLifecycle()
+    var active by remember { mutableStateOf(true) }
+    DisposableEffect(Unit) { onDispose { active = false } }
     var probing by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -339,33 +339,19 @@ fun FnosLoginScreen(
                         error = "请填写服务器地址、账号和密码"
                         return@Button
                     }
-                    scope.launch {
-                        busy = true
-                        error = null
-                        status = if (preview?.isConnect == true) {
-                            "正在通过 FN Connect 中继登录…"
-                        } else "正在登录并验证曲库…"
-                        val id = sourceId.ifBlank { UUID.randomUUID().toString() }
-                        vm.loginFnos(id, effectiveHost, username, password).fold(
-                            onSuccess = { baseUrl ->
-                                val uri = Uri.parse(baseUrl)
-                                val source = NasSource(
-                                    id = id,
-                                    name = "飞牛音乐",
-                                    type = SourceType.FNOS,
-                                    host = uri.host.orEmpty(),
-                                    port = if (uri.port > 0) uri.port else 0,
-                                    baseUrl = baseUrl,
-                                    username = username.trim(),
-                                    lastScanAt = existing?.lastScanAt ?: 0L
-                                )
-                                vm.addFnosSource(source, password)
-                                onDone()
-                            },
+                    error = null
+                    status = if (preview?.isConnect == true) {
+                        "正在通过 FN Connect 中继登录…"
+                    } else "正在登录并验证曲库…"
+                    val id = sourceId.ifBlank { java.util.UUID.randomUUID().toString() }
+                    // 登录跑在 ViewModel scope：退页面不取消，成功保存+同步曲库，失败由 VM 复位 busy
+                    vm.loginFnosAndWait(id, effectiveHost, username.trim(), password) { result ->
+                        if (!active) return@loginFnosAndWait
+                        result.fold(
+                            onSuccess = { onDone() },
                             onFailure = {
                                 error = friendlyError(it, "登录失败")
                                 status = null
-                                busy = false
                             }
                         )
                     }

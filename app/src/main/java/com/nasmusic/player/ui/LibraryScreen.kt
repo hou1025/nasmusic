@@ -37,6 +37,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -64,15 +65,15 @@ fun LibraryScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavControll
 
     // 只保留已连通音源的网络歌曲；未连通音源的列表清空，避免断网仍显示旧曲目。
     // 本地歌曲不受影响。探测未完成时 connectionStatus 为空，网络歌曲暂时隐藏。
-    val songs = remember(allSongs, connectionStatus) {
-        allSongs.filter { song ->
-            !song.isNas || connectionStatus[song.sourceId] == true
-        }
+    val songs = remember(allSongs, connectionStatus) { allSongs.filterConnected(connectionStatus) }
+    // 收藏 / 搜索等派生列表必须与歌曲 Tab 用同一口径，断连音源歌曲不可点击
+    val connectedFavorites = remember(favorites, connectionStatus) {
+        favorites.filterConnected(connectionStatus)
     }
 
-    var tab by remember { mutableStateOf(0) }
-    // 歌曲 Tab 的来源筛选：0=全部 1=网络音乐源 2=本地音乐
-    var songFilter by remember { mutableStateOf(0) }
+    var tab by rememberSaveable { mutableStateOf(0) }
+    // 歌曲 Tab 的来源筛选：0=全部 1=网络音乐源 2=本地音乐（旋转/切 Tab 不丢失）
+    var songFilter by rememberSaveable { mutableStateOf(0) }
     var group by remember { mutableStateOf<String?>(null) }
     var addTarget by remember { mutableStateOf<Song?>(null) }
     var editTarget by remember { mutableStateOf<Song?>(null) }
@@ -226,7 +227,7 @@ fun LibraryScreen(vm: MainViewModel, playerVm: PlayerViewModel, nav: NavControll
                 }
             }
             tab == 4 -> SongList(
-                songs = favorites,
+                songs = connectedFavorites,
                 state = state,
                 vm = vm,
                 playerVm = playerVm,

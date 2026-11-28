@@ -14,6 +14,7 @@ import com.nasmusic.player.core.isExcludedFolder
 import com.nasmusic.player.core.libraryFilter
 import com.nasmusic.player.core.mimeForName
 import com.nasmusic.player.core.nasUri
+import com.nasmusic.player.core.readLimitedBytes
 import com.nasmusic.player.data.db.SongDao
 import com.nasmusic.player.data.db.toSong
 import kotlinx.coroutines.Dispatchers
@@ -35,28 +36,56 @@ class NasScanner(
     private val context: Context,
     private val nasRepository: NasRepository,
     private val songDao: SongDao,
-    private val settings: SettingsStore
+    private val settings: SettingsStore,
+    private val onlineApi: OnlineMusicApi
 ) {
     private val coverNames = setOf("cover.jpg", "cover.jpeg", "cover.png", "folder.jpg", "front.jpg")
 
+    /**
+     * 按音源记录封面回填中已尝试过的 key（coverId / 在线封面 URL）。扫描器是单例，
+     * 状态可跨多次扫描保留：某批下载失败时下一轮跳过已尝试项，优先回填尚未尝试的封面，
+     * 避免曲库超过 300 张封面时永远卡在同一批；全部尝试过一轮后清空，让失败封面再获重试机会。
+     */
+    private val attemptedCoverKeys = HashMap<String, MutableSet<String>>()
+
+    /** 取本轮要尝试的封面 key：优先未尝试过的，最多 limit 个；若已全部尝试过则清空记录重试。 */
+    private fun pickCoverKeysToTry(scopeKey: String, allKeys: Collection<String>, limit: Int): List<String> =
+        synchronized(attemptedCoverKeys) {
+            val attempted = attemptedCoverKeys.getOrPut(scopeKey) { HashSet<String>() }
+            var pending = allKeys.filterNot { it in attempted }
+            if (pending.isEmpty()) {
+                attempted.clear()
+                pending = allKeys.toList()
+            }
+            val picked = pending.take(limit)
+            attempted.addAll(picked)
+            picked
+        }
+
     suspend fun scan(source: NasSource, onProgress: (ScanProgress) -> Unit): Int =
         withContext(Dispatchers.IO) {
-            // 飞牛音乐自带完整元数据，直接按 API 分页入库，无需逐文件读 ID3
-            if (source.type == SourceType.FNOS) return@withContext scanFnos(source, onProgress)
+            // 飞牛音乐 / 在线音源自带完整元数据，直接按 API 分页入库，无需逐文件读 ID3
+            when (source.type) {
+                SourceType.FNOS -> return@withContext scanFnos(source, onProgress)
+                SourceType.ONLINE -> return@withContext scanOnline(source, onProgress)
+                else -> Unit
+            }
             val filter = settings.snapshot().libraryFilter()
             val browser = nasRepository.browserFor(source.id)
+            var hadListError = false
             try {
                 val existing = songDao.byNasSource(source.id).associateBy { it.id }
                 val finalSongs = mutableListOf<Song>()
                 val dirs = ArrayDeque<String>()
                 val root = source.rootPath.trim().trim('/')
-                if (isExcludedFolder(root, filter.excludedFolders)) {
+                if (isExcludedFolder(root, filter.excludedFolders, filter.matchMode)) {
                     onProgress(ScanProgress(false, source.id, 0, 0, root, "根目录已被排除"))
                     return@withContext 0
                 }
                 dirs.add(root)
                 var scanned = 0
                 var visitedDirs = 0
+                var traversalTruncated = false
 
                 onProgress(
                     ScanProgress(true, source.id, 0, 0, source.rootPath, "正在连接 ${source.name}")
@@ -64,10 +93,15 @@ class NasScanner(
 
                 while (dirs.isNotEmpty()) {
                     currentCoroutineContext().ensureActive()
-                    if (visitedDirs++ > 3000) break
+                    if (visitedDirs++ > 3000) {
+                        // 目录过多：停止遍历，但不能再做整源替换，否则深层未扫到的歌会被误删
+                        traversalTruncated = true
+                        break
+                    }
                     val dir = dirs.removeFirst()
                     val entries = runCatching { browser.listDir(dir) }
                         .getOrElse { error ->
+                            hadListError = true
                             onProgress(
                                 ScanProgress(
                                     true, source.id, scanned, finalSongs.size, dir,
@@ -88,7 +122,7 @@ class NasScanner(
                     for (entry in entries) {
                         currentCoroutineContext().ensureActive()
                         if (entry.isDirectory) {
-                            if (isExcludedFolder(entry.path, filter.excludedFolders)) {
+                            if (isExcludedFolder(entry.path, filter.excludedFolders, filter.matchMode)) {
                                 onProgress(
                                     ScanProgress(
                                         true, source.id, scanned, finalSongs.size,
@@ -155,17 +189,34 @@ class NasScanner(
 
                 // 事务内一次性替换：既移除 NAS 上已删除的文件，又避免先清空后写入导致的
                 // 列表空窗闪烁与中途崩溃丢库；收藏状态已在上面保留。
-                nasRepository.replaceNasSongs(source.id, finalSongs)
-                nasRepository.updateScanTime(source.id)
-                onProgress(
-                    ScanProgress(
-                        false, source.id, scanned, finalSongs.size, "",
-                        "扫描完成，共 ${finalSongs.size} 首"
+                // 遍历被 3000 目录上限截断、或存在目录读取失败时绝不整源替换，只做增量 upsert，
+                // 否则未扫到 / 读取失败目录中的歌曲会被误删。
+                if (traversalTruncated || hadListError) {
+                    nasRepository.upsertSongs(finalSongs)
+                    val message = when {
+                        traversalTruncated && hadListError ->
+                            "目录数超过 3000 且部分目录读取失败，仅更新已扫描曲目，以避免误删未扫到的歌曲"
+                        traversalTruncated ->
+                            "目录数超过 3000，已停止遍历并仅更新已扫描曲目，以避免误删未扫到的歌曲"
+                        else ->
+                            "部分目录读取失败，仅更新已扫描曲目，以避免误删读取失败目录中的歌曲"
+                    }
+                    onProgress(ScanProgress(false, source.id, scanned, finalSongs.size, "", message))
+                } else {
+                    nasRepository.replaceNasSongs(source.id, finalSongs)
+                    onProgress(
+                        ScanProgress(
+                            false, source.id, scanned, finalSongs.size, "",
+                            "扫描完成，共 ${finalSongs.size} 首"
+                        )
                     )
-                )
+                }
+                nasRepository.updateScanTime(source.id)
                 finalSongs.size
             } finally {
                 runCatching { browser.close() }
+                // 扫描期间列表读取失败说明连接可能已失效，统一在结束时失效缓存，下次重建
+                if (hadListError) nasRepository.invalidateBrowser(source.id)
             }
         }
 
@@ -192,8 +243,9 @@ class NasScanner(
         runCatching {
             val access = browser.open(path)
             try {
-                val bytes = access.asInputStream().use { it.readBytes() }
-                if (bytes.size > 2 * 1024 * 1024) null else saveCover(songId, bytes)
+                // 限流读取：读满 2MB+1 即中断丢弃，避免把整个 cover.jpg 读进内存
+                val bytes = access.asInputStream().use { readLimitedBytes(it) }
+                bytes?.let { saveCover(songId, it) }
             } finally {
                 runCatching { access.close() }
             }
@@ -219,6 +271,7 @@ class NasScanner(
             val existing = songDao.byNasSource(source.id).associateBy { it.id }
             // 先翻完分页元数据，不边读边串行下封面（这是上次同步慢的主要原因）
             val allTracks = ArrayList<FnosTrack>()
+            val seenGuids = HashSet<String>()
             var page = 1
             var total = -1
             while (page <= 100) {
@@ -231,8 +284,10 @@ class NasScanner(
                 )
                 val (tracks, reportedTotal) = api.tracks(page, 200)
                 if (reportedTotal > 0) total = reportedTotal
-                allTracks.addAll(tracks)
-                if (tracks.isEmpty()) break
+                val before = allTracks.size
+                // 按 guid 去重：服务端若忽略 page 参数会重复返回同一批，不能重复入库
+                for (track in tracks) if (seenGuids.add(track.guid)) allTracks += track
+                if (tracks.isEmpty() || allTracks.size == before) break
                 if (total > 0 && page * 200 >= total) break
                 page++
             }
@@ -240,7 +295,9 @@ class NasScanner(
             // 先把元数据立即入库：列表无需等待封面网络请求即可显示歌曲。
             // 封面改为入库后批量回填，且只更新 artworkUri 一列，不重写整首歌。
             val songs = mutableListOf<Song>()
-            val coverIdToSongIds = HashMap<String, MutableList<String>>()
+            // LinkedHashMap 保留首次出现顺序；回填时由 pickCoverKeysToTry 每轮优先取未尝试过的 key，
+            // 避免下载失败时反复卡在同一批 300 张。
+            val coverIdToSongIds = LinkedHashMap<String, MutableList<String>>()
             for (track in allTracks) {
                 currentCoroutineContext().ensureActive()
                 val id = "nas:${source.id}:${track.guid}"
@@ -282,7 +339,7 @@ class NasScanner(
             )
 
             // 封面下载放到歌曲入库之后：即使中继慢/失败，也不影响列表已可见。
-            val neededCovers = coverIdToSongIds.keys.take(300)
+            val neededCovers = pickCoverKeysToTry("fnos:${source.id}", coverIdToSongIds.keys, 300)
             if (neededCovers.isNotEmpty()) {
                 val coverCache = HashMap<String, String>() // 仅存成功结果，避免 null value 触发 NPE
                 coroutineScope {
@@ -317,5 +374,88 @@ class NasScanner(
         } finally {
             api.close()
         }
+    }
+
+    /**
+     * Subsonic 在线音源同步：元数据直接入库（封面先用在线 URL 立即可见），
+     * 再异步下载封面到本地回填 artworkUri（每轮最多 300 张，优先未尝试过的），失败则保留在线 URL 作为兜底。
+     */
+    private suspend fun scanOnline(
+        source: NasSource,
+        onProgress: (ScanProgress) -> Unit
+    ): Int = withContext(Dispatchers.IO) {
+        onProgress(
+            ScanProgress(true, source.id, 0, 0, "", "正在读取在线曲库 ${source.name}")
+        )
+        val filter = settings.snapshot().libraryFilter()
+        val existing = songDao.byNasSource(source.id).associateBy { it.id }
+        val remote = onlineApi.listRoot(source)
+
+        val songs = ArrayList<Song>()
+        val coverUrlToSongIds = LinkedHashMap<String, MutableList<String>>()
+        val seen = HashSet<String>()
+        for (apiSong in remote) {
+            currentCoroutineContext().ensureActive()
+            if (!seen.add(apiSong.id)) continue
+            val old = existing[apiSong.id]
+            val song = apiSong.copy(
+                isFavorite = old?.isFavorite ?: false,
+                lyricsUri = old?.lyricsUri,
+                artworkUri = old?.artworkUri ?: apiSong.artworkUri
+            )
+            if (!song.isAllowedBy(filter)) continue
+            songs += song
+            val coverUrl = apiSong.artworkUri
+            if (!coverUrl.isNullOrBlank() && old?.artworkUri.isNullOrBlank()) {
+                coverUrlToSongIds.getOrPut(coverUrl) { ArrayList() } += song.id
+            }
+        }
+
+        // 与飞牛分支一致：事务内整源替换，列表只刷新一次
+        nasRepository.replaceNasSongs(source.id, songs)
+        nasRepository.updateScanTime(source.id)
+        onProgress(
+            ScanProgress(
+                false, source.id, songs.size, songs.size, "",
+                "已载入 ${songs.size} 首，正在补充封面…"
+            )
+        )
+
+        // 封面异步回填：下载失败不阻断入库，在线 URL 依旧可显示
+        val needed = pickCoverKeysToTry("online:${source.id}", coverUrlToSongIds.keys, 300)
+        if (needed.isNotEmpty()) {
+            val coverCache = HashMap<String, String>()
+            coroutineScope {
+                needed.chunked(8).forEach { batch ->
+                    batch.map { url ->
+                        async(Dispatchers.IO) {
+                            val coverId = Uri.parse(url).getQueryParameter("id").orEmpty()
+                            val uri = runCatching {
+                                if (coverId.isBlank()) null
+                                else onlineApi.coverBytes(source, coverId)
+                                    ?.let { saveCover("online:$coverId", it) }
+                            }.getOrNull()
+                            url to uri
+                        }
+                    }.awaitAll().forEach { (url, uri) ->
+                        if (uri != null) coverCache[url] = uri
+                    }
+                    currentCoroutineContext().ensureActive()
+                }
+            }
+            val batches = HashMap<String, List<String>>()
+            for ((url, uri) in coverCache) {
+                coverUrlToSongIds[url]?.let { batches[uri] = it }
+            }
+            nasRepository.updateArtworkBatches(batches)
+        }
+
+        onProgress(
+            ScanProgress(
+                false, source.id, songs.size, songs.size, "",
+                "在线曲库同步完成，共 ${songs.size} 首"
+            )
+        )
+        songs.size
     }
 }

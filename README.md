@@ -1,7 +1,7 @@
-# NasMusic · 无广告的本地音乐 + NAS + 飞牛音乐播放器
+# NasMusic · 无广告的本地音乐 + NAS + 飞牛 + 在线音源播放器
 
-> 轻量、**无广告**的 Android 音乐播放器，统一管理**本地音乐**、**NAS（SMB / WebDAV）**与**飞牛音乐（fnOS）**曲库。
-> 当前版本：`v1.9.6`（versionCode 22） · `com.nasmusic.player` · minSdk 24 / targetSdk 35
+> 轻量、**无广告**的 Android 音乐播放器，统一管理**本地音乐**、**NAS（SMB / WebDAV）**、**飞牛音乐（fnOS）**与**在线音乐源（Subsonic 兼容）**曲库。
+> 当前版本：`v2.3.9`（versionCode 46） · `com.nasmusic.player` · minSdk 24 / targetSdk 35
 
 ---
 
@@ -13,226 +13,104 @@
 | 📁 **本地音乐** | 扫描设备本地音乐，支持文件夹排除、短音频过滤、歌词与封面匹配、断点续听 |
 | 🗄️ **NAS 网络音乐** | 原生支持 **SMB/CIFS** 与 **WebDAV**，可直接浏览远程目录、在线播放、离线缓存 |
 | 🐮 **飞牛音乐（FNOS）** | 登录飞牛 NAS 上的飞牛音乐服务，曲库一键同步；支持**局域网 / FN ID 远程 / 自定义域名**三种接入方式 |
+| 🌐 **在线音乐源** | 通过「添加音乐源」接入任何 **Subsonic 兼容**服务（Navidrome / Gonic / Airsonic / Subsonic），测试连接 → 同步曲库 → 在线播放，公网强制 HTTPS |
+| 🎚️ **蝰蛇音效** | 内置调音引擎：10 段 EQ / 动态低音 / 人声清晰 / 场环绕 / 混响 / 回放增益 / 限幅 / 频谱扩展，12 套风格预设，模块可单独开关 |
+| 🚗 **车载音效** | 驾驶位/副驾声场聚焦、噪音档位补偿、导航闪避、6 套车载预设，车机模式可自动启用 |
 
-四种音源统一在一个曲库里管理，歌单、收藏、播放记录、缓存通用。
+五种音源统一在一个曲库里管理，歌单、收藏、播放记录、缓存通用。
+
+### 音效中心（v2.3.0 新增）
+- **入口**：播放页顶栏音效键（横屏为最左键）/ 设置页「音效中心」卡片。
+- **蝰蛇音效**：参考 ViPER4Android 的功能划分，用 Android 原生音频效果链路实现。支持原声 / 流行 / 摇滚 / 爵士 / 古典 / 电子 / 人声 / 重低音 / 耳机 / 现场 / ACG / 嘻哈 12 套预设，可在其基础上自定义 10 段 EQ 与各模块强度。检测到设备已安装 ViPER4Android 时会提示避免双重叠加。
+- **车载音效**：城市通勤 / 高速巡航 / 夜间驾驶 / 全车共享 / ACG / 现场 6 套预设，支持声场聚焦、车内噪音补偿、导航时压低音乐、车机模式自动启用。
+- **实现说明**：音效在音频输出级处理（ExoPlayer audioSessionId），对所有音源生效；配置实时生效，默认原生直通不劣化音质。ViPER4Android 是需 root 的系统级驱动，第三方 App 无法直接调用其私有引擎，本项目以原生 API 复刻其可调模块。
+- **播放页**：竖屏封面与歌词整合为上下分区同屏显示；横屏顶栏按键与竖屏对齐，取消封面/歌词 Tab 切换。
+
+### 网络音源入口（v2.2.0 调整）
+- **竖屏首页**：播放页顶栏的**云朵图标**直达「网络音乐源」（有歌/无歌状态均可见；「更多」菜单也保留入口）。
+- **横屏 / 车机**：发现页顶部 Tab 的「网络音源」为入口；发现页内容区的网络源大卡片保留。
+- **设置页**：不再重复展示网络源区块，入口统一到上述两处。
 
 ---
 
-## 1. 本次改造做了什么
+## 🆕 v2.2.0 本次改造（在线音源 + 稳定性 + 入口调整）
+
+**在线音乐源**：首页云朵按钮 → 网络音乐源 → 添加（名称/地址/账号/密码）→ 测试连接 → 保存并同步曲库。地址自动规范化、公网强制 HTTPS、凭据 Keystore 加密，曲目走 Subsonic `/rest/stream` 直链播放，封面走 `/rest/getCoverArt`。
+
+**内核 P0/P1 修复**：短读补齐与 Range 强制 206（不再播错/中途切歌）、断点恢复用 id 反查定位、SQL 分批、协程取消正确传播、封面 2MB 限流防 OOM、心跳按值去抖、过滤下沉 SQL、公私网 HTTPS 强制等。
+
+**UI 修复**：队列重复 key 崩溃、危险操作二次确认、断连音源曲目过滤、「下一首播放」插入队尾、歌词手动滚动保护、路径二次解码、状态持久化等。
+
+**多平台骨架**：`harmony/`（HarmonyOS ArkTS/ArkUI）、`windows/`（Compose Desktop）两个独立工程骨架，详见各自 README。
+
+**功能规划**：`功能拓展路线图.md` 给出后续方向（音源协议、**音质重点强化**、智能、跨平台、工程质量）与优先级；按所有者意见，播客/有声书/网盘与多设备云同步不纳入规划，鸿蒙与 Windows 为必做项。
+
+> 编译验证：JDK 17 + 本地 Gradle 8.9 离线 `compileDebugKotlin`。真机/真实 NAS 回归待用户侧完成。
+
+---
+
+## 1. 飞牛音乐接入说明（历史）
 
 在原有 **本地音乐 / SMB / WebDAV** 三种音源之外，新增第四种音源 **飞牛音乐（FNOS）**，可以直接登录 NAS 上的飞牛音乐服务，把曲库同步进本应用播放，无需把音乐文件挂载成本地目录。
 
-核心能力：
+### 三种连接方式
+1. **局域网**：`192.168.1.10` 或 `192.168.1.10:5666`（默认补 5666），用飞牛账号密码。
+2. **FN ID（远程）**：NAS 开启 FN Connect 后输入 FN ID，选 `5ddd.com` / `fnos.net` / `fnofly.com` 后缀，自动附加 `mode=relay`。
+3. **域名**：DDNS / 反向代理 / 公网 HTTPS，可填完整 `https://nas.example.com`。
 
-| 能力 | 说明 |
-| --- | --- |
-| 飞牛风格登录页 | 品牌色 + 居中卡片，支持显示/隐藏密码、连接测试、状态与错误内联提示 |
-| 三种接入方式 | 局域网 IP、FN ID / FN Connect 中继、自定义域名 / DDNS / 反向代理 |
-| 曲库同步 | 分页拉取 `/track/list`，直接用接口元数据入库，不依赖本地 ID3 解析 |
-| 直接播放 | `/track/stream?guid=` 签名 Range 请求，支持拖动进度、缓存、歌单、收藏 |
-| 封面与歌词 | 签名下载封面；歌词沿用原有链路 |
-| 凭据安全 | 账号密码经 Android Keystore 加密保存在本机；token 只存内存，失效自动重登 |
+### 曲库同步
+登录成功自动同步。卡片上的编辑图标 = 重新登录。若"扫描成功但列表为空"，检查「已排除的文件夹」是否把专辑名过滤掉了（飞牛曲库的"文件夹"字段即专辑名）。
 
 ---
 
-## 2. 使用说明
+## 2. 技术实现
 
-### 2.1 入口
+### 飞牛音乐网关
+私有网关，无公开文档；签名规则与端点来自对飞牛 Web 客户端的公开逆向资料，集中在 `data/FnosApi.kt`。网关前缀 `http(s)://<NAS>:5666/music/api/v1`；登录 `POST /user/password-login`；曲库 `GET /track/list`；音频 `GET /track/stream?guid=`（Range 随机读取）；封面 `GET /static/cover`。所有业务请求带 `authx` 头签名。凭据经 Android Keystore 加密保存在本机，token 只存内存。
 
-安装后进入 **设置 → 网络音乐源（NAS） → 飞牛登录**。
+### 在线音乐源网关
+`data/OnlineMusicApi.kt`，Subsonic 兼容：`/rest/ping.view` 测试、`/rest/search3.view` 搜索、`/rest/stream.view` 直链播放、`/rest/getCoverArt.view` 封面；参数 `u/p/v=1.16.1/c=NasMusic/f=json`。公网强制 HTTPS，私网允许 HTTP。
 
-### 2.2 三种连接方式
-
-登录页顶部有「连接方式」切换：**局域网 / FN ID / 域名**。
-
-1. **局域网**
-   - 填写 `192.168.1.10` 或 `192.168.1.10:5666`，默认补全 5666 端口。
-   - 使用飞牛 NAS 的账号密码。
-
-2. **FN ID（远程）**
-   - 需先在 NAS 的「设置 → 远程访问 → FN Connect」中开启。
-   - 输入 FN ID（如 `mynas`），选择官方域名后缀：`5ddd.com` / `fnos.net` / `fnofly.com`。
-   - 自动解析为 `https://mynas.5ddd.com`，所有请求附加 `Cookie: mode=relay` 强制走官方中继。
-   - 中继会限速；如 NAS 开启了「外网访问校验码」，页面会给出明确提示。
-
-3. **域名**
-   - 适用于 DDNS、反向代理、公网 IP + HTTPS。
-   - 可填完整 `https://nas.example.com`，不强制补 5666 端口。
-
-输入框下方会实时显示最终解析出的地址与连接模式；可先点「测试连接」验证可达性。
-
-### 2.3 曲库同步
-
-登录成功后自动同步曲库。卡片上的**编辑图标 = 重新登录**（密码不回填，需重新输入）。
-
-⚠️ **重要提示：排除规则会过滤飞牛曲目**
-飞牛曲库的「文件夹」字段就是专辑名，而扫描排除规则采用「包含匹配」。如果你已有大量以专辑名命名的排除规则，会把飞牛曲目全部挡在音乐列表外。
-若出现「扫描成功但列表为空」，请到 **设置 → 扫描过滤 → 展开「已排除的文件夹」**，删除相关专辑名规则后重新扫描。删除规则只影响本应用索引，不会动 NAS 上的文件。
+### 安全处理
+- 受控跳转：只跟随同主机跳转（最多 3 次），跨主机终止并提示，避免 Cookie 中 token 泄露。
+- 识别 FN Connect 返回的 HTML 校验页，避免把挑战页当 JSON 解析。
+- Room 开启 `exportSchema`，schema 落在 `app/schemas/`，禁止破坏性迁移，保护用户数据。
 
 ---
 
-## 3. 技术实现
-
-### 3.1 飞牛音乐网关
-
-私有网关，无公开文档；签名规则与端点来自对飞牛 Web 客户端的公开逆向资料，集中在 `data/FnosApi.kt`。
-
-- 网关前缀：`http(s)://<NAS>:5666/music/api/v1`
-- 登录：`POST /user/password-login`，请求体 `username` + `sha256(password)` + `deviceId`
-- 曲库：`GET /track/list?page=N&size=200`，取 `data.list` / `data.total`
-- 封面：`GET /static/cover?coverId=…&size=…`（二进制）
-- 音频：`GET /track/stream?guid=…`，HTTP `Range` 随机读取
-- 连通性探测：`GET /initialization/state`
-
-### 3.2 请求签名
-
-所有业务请求带 `authx` 头：
-
-```
-authx = "nonce=<6位随机数>&timestamp=<毫秒时间戳>&sign=<md5>"
-sign  = md5(SIGN_SALT + "_" + path + "_" + nonce + "_" + timestamp + "_" + payloadHash + "_" + CLIENT_KEY)
-payloadHash = GET  : md5(按 key 排序并解码后的 query)
-              POST : md5(原始 JSON body)
-```
-
-- 签名盐与客户端密钥常量集中在 `FnosApi.kt` 顶部（`CLIENT_KEY` 以字节码混淆形式存储）。
-- 非登录请求另带 `X-Music-API: v1`；登录握手不带此头。
-- 登录态通过 `Cookie: music-token=<token>` 携带；FN Connect 模式下合并为 `Cookie: mode=relay; music-token=…`。
-
-### 3.3 安全处理
-
-- `followRedirects(false)` + 受控跳转：中继在 P2P/局域网场景可能 302 到内网地址，跟随会泄露 Cookie 中的 token；实现只跟随同主机跳转（最多 3 次），跨主机直接终止并提示。
-- 识别 FN Connect 返回的 HTML 校验页，避免把挑战页当成 JSON 解析。
-- 二维码/校验码场景给出可操作提示，而不是含糊的「解析失败」。
-
-### 3.4 性能优化
-
-| 优化点 | 改动前 | 改动后 |
-| --- | --- | --- |
-| 播放读取 | Media3 每次 `read()` 发一个 HTTP Range 请求 | 512KB 顺序预读缓冲，请求数减少约 8 倍 |
-| HTTP 连接 | 每次扫描/播放新建 OkHttpClient，重复 TCP+TLS 握手 | 全局共享客户端与连接池（飞牛 / WebDAV 共用） |
-| 音频长度 | 播放前额外发一次 `Range: bytes=0-0` 探测 | 复用曲库元数据 `sizeBytes` |
-| 封面刷新 | 每次刷新重下全部封面，8 路串行 | 增量跳过已有封面，去重后 8 路并发，上限 300 张 |
-| 缓存拷贝 | 64KB 缓冲、单路串行 | 512KB 缓冲、3 路并发 |
-| 本地曲库刷新 | 全量 REPLACE 写 Room | 仅写入变化曲目 |
-
----
-
-## 4. 变更日志
-
-### v1.9.6（当前）
-- **歌曲 Tab 来源筛选改为可点击切换栏**：在原分区标题那一行放置「全部 / 网络音乐源 / 本地音乐」三个选项，可点击切换；选「网络音乐源」只看网络歌曲，选「本地音乐」只看本地歌曲。
-- **只有本地音乐（无网络源）时，整行筛选栏不显示**，本地歌曲直接平铺。
-
-### v1.9.5
-- **修复扫描时误报「扫描失败：StandaloneCoroutine was cancelled」**：`runCatching` 会连协程取消异常一起捕获，导致点「取消扫描」或被新扫描顶替时把正常的取消误报成失败。现在单独识别 `CancellationException` 并静默退出，取消状态正确保留。
-- **大幅缩短网络曲库载入列表的时间**：飞牛扫描改为「元数据先入库 → 列表立即可见 → 封面后台批量回填」。原先要等全部封面下载完才写库，1602 首歌要等很久才能出现在列表；现在几秒内歌曲即可显示，封面下载失败也不影响列表。
-- 入库改用 Room 事务一次性替换整源曲库，列表只刷新一次，避免先清空后写入造成的闪烁/短暂空列表；封面用 `UPDATE ... WHERE id IN` 批量回填，不重写整首歌。
-- **歌曲列表分区规则调整**：有网络源歌曲时显示「网络音乐源」「本地音乐」两个分区；没有网络源时不显示任何分区标题，本地歌曲平铺显示。
-
-### v1.9.4
-- **歌曲列表分区显示**：歌曲 Tab 内拆分为「网络音乐源」与「本地歌曲」两段，各自独立成队列播放；网络源与本地歌曲不再混在一起。
-- 修复关闭/删除 NAS（SMB/WebDAV）或飞牛音乐后，旧歌曲仍残留在列表中的问题：列表查询与音源表联动，删除音源时同步清理歌单引用、歌曲与播放队列，Room Flow 自动刷新。
-- 修复网络歌曲播放结束后不自动播放下一曲：网络流读到尾部时修正剩余字节数，正确向 Media3 发出 EOF 信号。
-- 同步版本与文档至 v1.9.4。
-
-### v1.9.3
-- 修复扫描封面下载失败时写入 `ConcurrentHashMap` 的 null value 导致的无消息 `NullPointerException`（远程中继限速时更容易触发）→ 改用普通 `HashMap`，失败封面跳过，不影响歌曲入库。
-- 修正折叠对象：「已排除的文件夹（N）」列表现在默认收起，点标题行或箭头展开/收起；「从音乐库中选择要排除并移除的文件夹」同样默认折叠。
-
-### v1.9.2
-- 修复飞牛网关返回 `code` 但 `msg` 为空串时的空消息异常：`ifBlank` 兜底并带上接口路径与返回码，例如 `曲库请求失败（/track/list，code=xxx）`。
-- 扫描失败提示改为「扫描失败：异常类型或原始消息」，不再只剩兜底文案。
-- 登录接口同样加空消息兜底。
-- 设置页候选文件夹列表默认折叠。
-
-### v1.9.1
-- 新增 **FN ID / FN Connect 远程连接**：地址解析支持裸 FN ID、Connect 子域名、DDNS/公网域名；自动附加 `mode=relay` Cookie；跨主机重定向拦截；HTML 校验页识别。
-- 登录页新增「连接方式」切换与 FN ID 域名后缀选择，实时显示解析结果。
-- 曲库刷新提速（封面增量 + 8 路并发）、移出文件夹提示取消。
-- 播放启动提速（512KB 预读、共享连接池、复用 sizeBytes、缓存并发）。
-- 重写 `FnosApi.kt`（地址解析与中继逻辑）。
-
-### v1.9.0
-- 新增第四种音源 `SourceType.FNOS` 与飞牛风格登录页。
-- 实现 `/user/password-login` 登录、`authx` 签名、`music-token` Cookie、`/track/list` 分页同步。
-- 实现 `/track/stream` 签名 Range 流播放，复用现有 `nas://` → Media3 链路。
-- 凭据经 Android Keystore 加密保存，token 内存会话，失效自动重登。
-- 版本 1.8.0 → 1.9.0。
-
----
-
-## 5. 文件改动明细
-
-### 新增文件
-
-| 文件 | 说明 |
-| --- | --- |
-| `app/src/main/java/com/nasmusic/player/data/FnosApi.kt` | 飞牛私有网关客户端：地址解析、签名、登录、曲库分页、封面、Range 流、中继与会话管理；并定义全局共享 `NasHttp` |
-| `app/src/main/java/com/nasmusic/player/ui/FnosLoginScreen.kt` | 飞牛风格全屏登录页：三种连接方式、FN ID 后缀选择、连接测试、登录并同步曲库 |
-
-### 修改文件
-
-| 文件 | 改动内容 |
-| --- | --- |
-| `core/Models.kt` | `SourceType` 增加 `FNOS`；音源显示名增加「NAS · 飞牛音乐」 |
-| `data/NasClients.kt` | `NasClients.create()` 增加 FNOS 分支；新增 `FnosBrowser`；`WebDavBrowser` 改用共享 HTTP 客户端；音频长度复用已知 `sizeBytes` |
-| `data/NasScanner.kt` | 新增 FNOS 扫描分支，直接以接口元数据构造 `Song` 入库；封面增量跳过 + 并发下载；修复封面缓存 NPE |
-| `data/NasCache.kt` | 缓存拷贝缓冲 64KB → 512KB；批量缓存改为 3 路并发 |
-| `data/MusicRepository.kt` | 本地曲库刷新改为只写入变化曲目 |
-| `playback/NasDataSource.kt` | 新增 512KB 顺序预读缓冲，减少 Range 请求次数 |
-| `ui/ViewModels.kt` | 新增 `testFnosConnection()` / `loginFnos()` / FNOS 扫描流程；错误诊断文案；取消移出文件夹与清理过滤的 Snackbar |
-| `ui/NasScreens.kt` | 网络音乐源页增加飞牛登录入口与 FNOS 卡片，支持重新登录 |
-| `ui/AppNav.kt` | 增加 `fnosLogin` 路由与登录页组合 |
-| `ui/SettingsScreen.kt` | 两个文件夹列表默认折叠，点击标题展开/收起 |
-| `ui/LibraryScreen.kt` | 歌曲 Tab 分区为「网络音乐源 / 本地歌曲」两段（`GroupedSongList`），各段独立队列播放 |
-| `data/db/Daos.kt` | 列表/搜索查询过滤已删除音源的歌曲；新增按 sourceId 清理歌单引用的方法 |
-| `data/NasRepository.kt` | 删除音源时先清歌单引用、再删歌曲、再删音源 |
-| `playback/PlaybackController.kt` | 新增 `removeBySourceId` 清理播放队列 |
-| `core/AppContainer.kt` | `NasRepository` 构造参数适配 |
-| `app/build.gradle.kts` | versionCode 19 → 20，versionName 1.9.3 → 1.9.4 |
-| `ui/ViewModels.kt` | 扫描错误分支识别并排除 `CancellationException`，取消不再误报为失败 |
-| `data/NasScanner.kt` | 飞牛扫描改为元数据先入库、封面后置批量回填，列表载入不再等封面下载 |
-| `data/NasRepository.kt` | 新增事务内整源替换 `replaceNasSongs`、按歌曲 id 批量回填封面 `updateArtworkBatches` |
-| `data/db/Daos.kt` | 新增 `@Transaction replaceNasSongs` 与 `setArtworkUriForIds` 批量更新 |
-| `ui/LibraryScreen.kt` | 分区规则：有网络源显示两组标题，无网络源则平铺本地歌曲、不显示标题 |
-| `ui/LibraryScreen.kt` | v1.9.6：分区标题改为可点击筛选栏（全部/网络/本地），无网络源时不显示筛选栏 |
-
----
-
-## 6. 构建
+## 3. 构建
 
 本机验证环境：JDK 17、Android SDK 35、Gradle 8.9（离线模式）。
 
 ```bash
 export JAVA_HOME=/path/to/jdk-17
-export ANDROID_HOME=/path/to/android-sdk
-./gradlew assembleDebug --offline
+gradle compileDebugKotlin --offline --no-daemon --console=plain
+# 或
+gradle clean assembleDebug --offline --no-daemon --console=plain
 ```
 
 输出：`app/build/outputs/apk/debug/app-debug.apk`
 
-已验证：`assembleDebug` **BUILD SUCCESSFUL**；`aapt2 dump badging` 确认 `versionCode=22 / versionName=1.9.6`；DEX 内核对了飞牛相关功能字符串。
+> 注意：`--rerun-tasks` 与并行任务组合可能触发 dex merge 的 `NoSuchFileException` 竞态；全量验证请用 `clean assembleDebug`。
 
 ---
 
-## 7. 已知限制与免责声明
+## 4. 已知限制与免责声明
 
-1. **私有接口风险**：飞牛音乐 API 未公开，签名常量来自公开逆向资料，集中在 `FnosApi.kt` 顶部。固件升级改动签名规则会导致登录失败。
-2. **版本头兼容**：非登录请求加了 `X-Music-API: v1`；若设备返回 403/签名错误，可去掉 `signedRequest()` 中该行后重试。
-3. **自签 HTTPS**：当前未做自签证书放行，自签证书场景需自行调整网络安全配置。
-4. **中继限速**：FN Connect 走官方中继，封面与曲库同步会比局域网慢。
-5. **未做真机实测**：开发环境无飞牛 NAS 与 adb 设备，仅完成编译与静态验收；FN Connect 网关对 `/music/api/v1` 的实际代理行为需现场确认。
-6. 本项目仅供学习研究使用，使用者需自行评估使用私有接口的风险。
+1. **私有接口风险**：飞牛音乐 API 未公开，固件升级改动签名规则会导致登录失败；Subsonic 为开放协议，稳定性更好。
+2. **自签 HTTPS**：当前未做自签证书放行。
+3. **中继限速**：FN Connect 走官方中继，封面与曲库同步较慢。
+4. **未做真机实测**：开发环境无飞牛 NAS 与 adb 设备，仅完成编译与静态验收。
+5. 本项目仅供学习研究使用，使用者需自行评估使用私有接口的风险。
 
 ---
 
-## 8. 排障参考
+## 5. 排障参考
 
 | 现象 | 处理 |
 | --- | --- |
-| 扫描提示「扫描失败：曲库请求失败（/track/list，code=xxx）」 | 把完整红色错误文字贴到 issue，含 code 值 |
+| 扫描提示「曲库请求失败（/track/list，code=xxx）」 | 把完整错误文字（含 code）贴到 issue |
 | 提示「服务器跳转到其他主机」 | 确认 FN Connect 已开启，或改用局域网地址 |
-| 提示网页校验页 / 外网访问校验码 | 在 NAS 远程访问设置中关闭校验码，或先完成网页端校验 |
-| 扫描成功但列表为空 | 检查「已排除的文件夹」是否把专辑名当文件夹过滤掉了 |
+| 提示网页校验页 / 外网访问校验码 | 在 NAS 远程访问设置中关闭校验码 |
+| 扫描成功但列表为空 | 检查「已排除的文件夹」是否把专辑名过滤掉了 |
 | 封面显示不全 | 中继限速会跳过失败封面，不影响播放；可重新扫描 |

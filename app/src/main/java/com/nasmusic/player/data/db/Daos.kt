@@ -19,6 +19,19 @@ interface SongDao {
     )
     fun all(): Flow<List<SongEntity>>
 
+    /**
+     * 时长阈值下沉到 SQL：短音频不必先整表读进内存再由 Kotlin 过滤。
+     * 文件夹排除因规则需要跨平台归一化（\ -> /、忽略大小写）仍在外层做，
+     * 但结果集已被时长条件大幅收窄。
+     */
+    @Query(
+        "SELECT * FROM songs WHERE (sourceType = 'LOCAL' " +
+            "OR sourceId IN (SELECT id FROM nas_sources)) " +
+            "AND (:minMs <= 0 OR durationMs = 0 OR durationMs >= :minMs) " +
+            "ORDER BY title COLLATE NOCASE ASC"
+    )
+    fun allFiltered(minMs: Long): Flow<List<SongEntity>>
+
     @Query(
         "SELECT * FROM songs WHERE (sourceType = 'LOCAL' " +
             "OR sourceId IN (SELECT id FROM nas_sources)) " +

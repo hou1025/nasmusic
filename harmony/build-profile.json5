@@ -1,0 +1,29 @@
+// HarmonyOS 工程级构建配置（Stage 模型，API 12 / HarmonyOS NEXT）
+{
+  "app": {
+    // 签名配置在 DevEco Studio 中自动生成后写入，本机未配置，故留空。
+    // File > Project Structure > Project > Signing Configs 勾选 Automatically generate signature。
+    "signingConfigs": [],
+    "products": [
+      {
+        "name": "default",
+        "signingConfig": "default",
+        "compatibleSdkVersion": "5.0.0(12)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildSet": {
+      "default": {
+        "products": [
+          "default"
+        ]
+      }
+    }
+  }
+}

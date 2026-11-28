@@ -7,6 +7,8 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Media3 网络播放需要唤醒锁，否则息屏后台可能被系统挂起 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- Android 13+ 音频媒体权限；Android 12 及以下回退到 READ_EXTERNAL_STORAGE -->
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
@@ -19,9 +21,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- 局域网 NAS（WebDAV/飞牛/Subsonic 私网地址）仍需明文 HTTP；
+         公网地址在 FnosApi.resolve / WebDavBrowser / OnlineMusicApi.normalizeBaseUrl
+         中强制升级为 HTTPS，避免凭据通过明文外泄。 -->
     <application
         android:name=".App"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"

@@ -45,12 +45,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -104,9 +104,11 @@ private val DiscoverInk = Color(0xFF23252B)
 private sealed interface RightPane {
     data object None : RightPane
     data class FnosLogin(val sourceId: String) : RightPane
+    data class OnlineLogin(val sourceId: String) : RightPane
     data class NasBrowser(val sourceId: String, val path: String) : RightPane
     data class Playlist(val playlistId: String) : RightPane
     data object Settings : RightPane
+    data object SoundEffect : RightPane
 }
 
 /**
@@ -117,18 +119,32 @@ private sealed interface RightPane {
 fun DiscoverScreen(
     vm: MainViewModel,
     playerVm: PlayerViewModel,
-    nav: NavController
+    nav: NavController,
+    // 横屏下从播放页/设置页点「音效」进入时，右栏直接落在音效页，左侧播放卡片常驻；
+    // soundExit 为音效页的返回动作（一般为返回上一路由）。默认行为与发现页快捷入口一致。
+    startInSound: Boolean = false,
+    soundExit: (() -> Unit)? = null
 ) {
     val state by playerVm.state.collectAsStateWithLifecycle()
     val coverOverrides by playerVm.coverOverrides.collectAsStateWithLifecycle()
     val lyrics by playerVm.lyrics.collectAsStateWithLifecycle()
-    val songs by vm.songs.collectAsStateWithLifecycle()
-    val favorites by vm.favorites.collectAsStateWithLifecycle()
+    val allSongs by vm.songs.collectAsStateWithLifecycle()
+    val allFavorites by vm.favorites.collectAsStateWithLifecycle()
+    val connectionStatus by vm.nasConnectionStatus.collectAsStateWithLifecycle()
+    // 随机漫游 / 收藏 / 最近添加与歌曲 Tab 共用同一过滤口径，断连音源不会被建进播放队列
+    val songs = remember(allSongs, connectionStatus) { allSongs.filterConnected(connectionStatus) }
+    val favorites = remember(allFavorites, connectionStatus) {
+        allFavorites.filterConnected(connectionStatus)
+    }
     val playlists by vm.playlists.collectAsStateWithLifecycle()
     val nasSources by vm.nasSources.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) { vm.refreshNasConnections() }
     var tab by remember { mutableStateOf(0) }
     // 右栏二级页面（FN 登录 / NAS 浏览 / 歌单详情）内嵌在发现页里，左侧播放卡片常驻不受影响。
-    var rightPane by remember { mutableStateOf<RightPane>(RightPane.None) }
+    // startInSound=true 时（横屏独立音效入口）初始就落在音效页，同样保留左侧播放卡片。
+    var rightPane by remember {
+        mutableStateOf<RightPane>(if (startInSound) RightPane.SoundEffect else RightPane.None)
+    }
 
     // 分屏后窗口可能只有半屏甚至 1/3 屏：按「窗口」尺寸整体缩小第一张图的双栏，
     // 不再切换到另一种布局——任何宽度下都保持左侧黑胶播放卡片 + 右侧标签页。
@@ -147,6 +163,12 @@ fun DiscoverScreen(
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (val pane = rightPane) {
                     is RightPane.FnosLogin -> FnosLoginScreen(
+                        vm = vm,
+                        sourceId = pane.sourceId,
+                        onBack = backToTabs,
+                        onDone = backToTabs
+                    )
+                    is RightPane.OnlineLogin -> OnlineSourceLoginScreen(
                         vm = vm,
                         sourceId = pane.sourceId,
                         onBack = backToTabs,
@@ -176,6 +198,16 @@ fun DiscoverScreen(
                             }
                         }
                     }
+                    RightPane.SoundEffect -> {
+                        // 独立音效入口（横屏）返回时退出到上一路由；发现页内嵌入口则回到标签页。
+                        val exitSound = soundExit ?: backToTabs
+                        Column(Modifier.fillMaxSize()) {
+                            SimpleTopBar(title = "音效设置", onBack = exitSound)
+                            Box(Modifier.weight(1f).fillMaxWidth()) {
+                                SoundEffectScreen(vm, exitSound, embedded = true)
+                            }
+                        }
+                    }
                     RightPane.None -> when (tab) {
                         0 -> DiscoverFeed(
                             playerVm = playerVm,
@@ -187,7 +219,7 @@ fun DiscoverScreen(
                             onOpenLocal = { tab = 1 },
                             onOpenSources = { tab = 2 },
                             onOpenPlaylist = { id -> rightPane = RightPane.Playlist(id) },
-                            onOpenSettings = { rightPane = RightPane.Settings },
+                            onOpenSound = { rightPane = RightPane.SoundEffect },
                             scale = uiScale
                         )
                         1 -> LibraryScreen(vm, playerVm, nav)
@@ -195,6 +227,7 @@ fun DiscoverScreen(
                             vm = vm,
                             nav = nav,
                             onFnosLogin = { id -> rightPane = RightPane.FnosLogin(id) },
+                            onOnlineLogin = { id -> rightPane = RightPane.OnlineLogin(id) },
                             onBrowse = { id, path -> rightPane = RightPane.NasBrowser(id, path) }
                         )
                         else -> PlaylistScreen(
@@ -223,7 +256,13 @@ fun DiscoverScreen(
                 modifier = Modifier.width(paneWidth).fillMaxHeight()
             )
             Column(Modifier.weight(1f).fillMaxHeight()) {
-                DiscoverTopBar(active = tab, onTab = onTab, onSearch = onSearch, scale = uiScale)
+                DiscoverTopBar(
+                    active = tab,
+                    onTab = onTab,
+                    onSearch = onSearch,
+                    onOpenSettings = { rightPane = RightPane.Settings },
+                    scale = uiScale
+                )
                 tabs()
             }
         }
@@ -235,6 +274,7 @@ private fun DiscoverTopBar(
     active: Int,
     onTab: (Int) -> Unit,
     onSearch: () -> Unit,
+    onOpenSettings: () -> Unit = {},
     scale: Float = 1f
 ) {
     val tabs = listOf("发现", "本地音乐", "网络音源", "我的")
@@ -285,6 +325,16 @@ private fun DiscoverTopBar(
                 }
             }
         }
+        // 设置键：与竖屏顶栏一致，直接可见的文字入口
+        Text(
+            "设置",
+            color = DiscoverInk.copy(alpha = 0.85f),
+            fontWeight = FontWeight.Medium,
+            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp * scale),
+            modifier = Modifier
+                .clickable(onClick = onOpenSettings)
+                .padding(horizontal = 8.dp * scale, vertical = 8.dp)
+        )
         IconButton(onClick = onSearch, modifier = Modifier.size(48.dp * scale)) {
             Icon(
                 Icons.Default.Search,
@@ -437,92 +487,6 @@ private fun NowPlayingPane(
                         )
                     }
                 }
-            }
-        }
-    }
-}
-
-/** 分屏时的紧凑播放条：约 72dp 高，保留封面/歌名/播放/下一首/展开。 */
-@Composable
-private fun CompactNowPlayingBar(
-    state: PlaybackUiState,
-    artwork: String?,
-    playerVm: PlayerViewModel,
-    onOpenPlayer: () -> Unit,
-    onScan: () -> Unit
-) {
-    val song = state.currentSong
-    Card(
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                Modifier
-                    .size(52.dp)
-                    .clip(CircleShape)
-                    .background(Color(0xFF131316)),
-                contentAlignment = Alignment.Center
-            ) {
-                if (artwork != null) {
-                    AsyncImage(
-                        model = artwork,
-                        contentDescription = song?.title ?: "封面",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.size(52.dp).clip(CircleShape)
-                    )
-                } else {
-                    Icon(
-                        Icons.Default.MusicNote,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
-            }
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    song?.title ?: "暂无播放歌曲",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1
-                )
-                if (song == null) {
-                    // 紧凑条高度有限：扫描入口放在副标题行，避免第三行被裁切
-                    Text(
-                        "点击扫描本地音乐",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = DiscoverRed,
-                        maxLines = 1,
-                        modifier = Modifier.clickable { onScan() }
-                    )
-                } else {
-                    Text(
-                        song.artist?.ifBlank { "未知歌手" } ?: "未知歌手",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1
-                    )
-                }
-            }
-            IconButton(onClick = { playerVm.playPause() }) {
-                Icon(
-                    if (state.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                    contentDescription = if (state.isPlaying) "暂停" else "播放",
-                    tint = DiscoverInk
-                )
-            }
-            IconButton(onClick = { playerVm.next() }, enabled = song != null) {
-                Icon(Icons.Default.SkipNext, contentDescription = "下一首", tint = DiscoverInk)
-            }
-            IconButton(onClick = onOpenPlayer) {
-                Icon(Icons.Default.ChevronRight, contentDescription = "展开播放器", tint = DiscoverInk)
             }
         }
     }
@@ -1008,7 +972,7 @@ private fun DiscoverFeed(
     onOpenLocal: () -> Unit,
     onOpenSources: () -> Unit,
     onOpenPlaylist: (String) -> Unit,
-    onOpenSettings: () -> Unit,
+    onOpenSound: () -> Unit,
     scale: Float = 1f
 ) {
     Column(
@@ -1039,20 +1003,47 @@ private fun DiscoverFeed(
         Spacer(Modifier.height(16.dp * scale))
         SectionTitle("快捷入口", scale = scale)
         Spacer(Modifier.height(8.dp * scale))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp * scale)) {
-            QuickCard("随机漫游", listOf(Color(0xFFA7ABB4), Color(0xFF8B9099)),
-                Modifier.weight(1f), scale, {
-                if (songs.isNotEmpty()) playerVm.playSongs(songs.shuffled())
-            })
-            QuickCard("我的收藏", listOf(Color(0xFF1D3A70), Color(0xFF0E214A)),
-                Modifier.weight(1f), scale, {
-                if (favorites.isNotEmpty()) playerVm.playSongs(favorites)
-            })
-            QuickCard("最近添加", listOf(Color(0xFFA68C71), Color(0xFF7C664F)),
-                Modifier.weight(1f), scale, {
-                val recent = songs.sortedByDescending { it.lastModified }.take(50)
-                if (recent.isNotEmpty()) playerVm.playSongs(recent)
-            })
+        // 四个快捷入口：竖屏/窄窗口两行两列，宽屏车机一行四列，避免文字被挤压
+        val quickCards = listOf<@Composable () -> Unit>(
+            {
+                QuickCard("随机漫游", listOf(Color(0xFFA7ABB4), Color(0xFF8B9099)),
+                    scale = scale, onClick = {
+                    if (songs.isNotEmpty()) playerVm.playSongs(songs.shuffled())
+                })
+            },
+            {
+                QuickCard("我的收藏", listOf(Color(0xFF1D3A70), Color(0xFF0E214A)),
+                    scale = scale, onClick = {
+                    if (favorites.isNotEmpty()) playerVm.playSongs(favorites)
+                })
+            },
+            {
+                QuickCard("最近添加", listOf(Color(0xFFA68C71), Color(0xFF7C664F)),
+                    scale = scale, onClick = {
+                    val recent = songs.sortedByDescending { it.lastModified }.take(50)
+                    if (recent.isNotEmpty()) playerVm.playSongs(recent)
+                })
+            },
+            {
+                QuickCard(
+                    "音效设置",
+                    listOf(Color(0xFF6A4FB3), Color(0xFF3E2C73)),
+                    scale = scale,
+                    icon = Icons.Default.GraphicEq,
+                    onClick = onOpenSound
+                )
+            }
+        )
+        // 与上方本地音乐/网络音乐源按键同尺寸：固定两列，4 张卡片分两排，每个占一半宽
+        val quickPerRow = 2
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp * scale)) {
+            quickCards.chunked(quickPerRow).forEach { rowCards ->
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp * scale)) {
+                    rowCards.forEach { card ->
+                        Box(Modifier.weight(1f)) { card() }
+                    }
+                }
+            }
         }
 
         Spacer(Modifier.height(20.dp * scale))
@@ -1103,46 +1094,7 @@ private fun DiscoverFeed(
             }
         }
 
-        Spacer(Modifier.height(20.dp * scale))
-        SectionTitle("设置", scale = scale)
-        Spacer(Modifier.height(8.dp * scale))
-        Surface(
-            shape = RoundedCornerShape(16.dp * scale),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-            modifier = Modifier.fillMaxWidth().clickable(onClick = onOpenSettings)
-        ) {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 16.dp * scale, vertical = 14.dp * scale),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    Icons.Default.Settings,
-                    contentDescription = null,
-                    tint = DiscoverRed,
-                    modifier = Modifier.size(24.dp * scale)
-                )
-                Spacer(Modifier.width(12.dp * scale))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "设置",
-                        fontSize = 16.sp * scale,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Text(
-                        "音源 / 缓存 / 外观 / 睡眠定时",
-                        fontSize = 12.sp * scale,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Icon(
-                    Icons.Default.ChevronRight,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(20.dp * scale)
-                )
-            }
-        }
+        // 底部「设置」卡片已移除：顶栏已有「设置」文字按钮，避免重复入口
         Spacer(Modifier.height(24.dp * scale))
     }
 }
@@ -1204,18 +1156,20 @@ private fun QuickCard(
     colors: List<Color>,
     modifier: Modifier = Modifier,
     scale: Float = 1f,
+    icon: androidx.compose.ui.graphics.vector.ImageVector = Icons.Default.PlayArrow,
     onClick: () -> Unit
 ) {
     Surface(
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(18.dp),
         color = Color.Unspecified,
-        modifier = modifier.height(92.dp * scale).clickable(onClick = onClick)
+        // 撑满 Box(weight(1f)) 分配的宽度，与上方本地音乐/网络音乐源按键同尺寸
+        modifier = modifier.fillMaxWidth().height(124.dp * scale).clickable(onClick = onClick)
     ) {
         Box(
-            Modifier.background(Brush.linearGradient(colors)).padding(14.dp * scale),
+            Modifier.fillMaxSize().background(Brush.linearGradient(colors)).padding(18.dp * scale),
             contentAlignment = Alignment.BottomStart
         ) {
-            Text(label, color = Color.White, fontSize = 17.sp * scale, fontWeight = FontWeight.Medium)
+            Text(label, color = Color.White, fontSize = 20.sp * scale, fontWeight = FontWeight.Medium)
             Box(
                 Modifier
                     .align(Alignment.CenterEnd)
@@ -1224,7 +1178,7 @@ private fun QuickCard(
                     .background(Color.White.copy(alpha = 0.28f)),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White,
+                Icon(icon, contentDescription = null, tint = Color.White,
                     modifier = Modifier.size(18.dp * scale))
             }
         }

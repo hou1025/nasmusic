@@ -5,6 +5,7 @@ import android.net.Uri
 import com.nasmusic.player.core.NasSource
 import com.nasmusic.player.core.Song
 import com.nasmusic.player.core.parseNasUri
+import com.nasmusic.player.core.suspendCatching
 import com.nasmusic.player.data.db.NasSourceDao
 import com.nasmusic.player.data.db.PlaylistDao
 import com.nasmusic.player.data.db.SongDao
@@ -18,6 +19,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
 
 class NasRepository(
     private val context: Context,
@@ -28,14 +30,40 @@ class NasRepository(
 ) {
     val sources: Flow<List<NasSource>> = sourceDao.all().map { it.map { e -> e.toModel() } }
 
+    // 按 sourceId 缓存浏览器：SMB 每次新建要重做握手/认证，是切歌与拖动延迟的主要来源。
+    // 配置指纹变化时失效重建；callers 的 close() 是 no-op，真正释放由 invalidateBrowser 负责。
+    private data class CachedBrowser(val fingerprint: String, val browser: NasBrowser)
+
+    private val sourceCache = ConcurrentHashMap<String, NasSource>()
+    private val browserCache = ConcurrentHashMap<String, CachedBrowser>()
+
+    private class SharedBrowser(private val delegate: NasBrowser) : NasBrowser {
+        override fun listDir(path: String): List<NasEntry> = delegate.listDir(path)
+        override fun open(path: String): NasRandomAccess = delegate.open(path)
+        override fun close() = Unit
+    }
+
+    private fun fingerprint(s: NasSource): String = listOf(
+        s.type.name, s.host, s.port, s.share, s.rootPath, s.baseUrl,
+        s.username, s.passwordEnc, s.anonymous
+    ).joinToString("\u0000")
+
+    /** 连接异常或音源变更后调用：关闭旧连接，下一次 browserFor 重新建。 */
+    fun invalidateBrowser(id: String) {
+        browserCache.remove(id)?.browser?.let { runCatching { it.close() } }
+    }
+
     suspend fun get(id: String): NasSource? = withContext(Dispatchers.IO) {
-        sourceDao.get(id)?.toModel()
+        sourceDao.get(id)?.toModel()?.also { sourceCache[id] = it }
     }
 
     /** 保存源；密码以 Keystore 加密后的密文入库，明文只在内存中出现。 */
     suspend fun save(source: NasSource, plainPassword: String?) = withContext(Dispatchers.IO) {
         val enc = if (plainPassword != null) crypto.encrypt(plainPassword) else source.passwordEnc
-        sourceDao.upsert(source.copy(passwordEnc = enc).toEntity())
+        val stored = source.copy(passwordEnc = enc)
+        sourceDao.upsert(stored.toEntity())
+        sourceCache[source.id] = stored
+        invalidateBrowser(source.id)
     }
 
     suspend fun delete(id: String) = withContext(Dispatchers.IO) {
@@ -44,6 +72,8 @@ class NasRepository(
         playlistDao.deletePlaylistRefsByNasSource(id)
         songDao.deleteByNasSource(id)
         sourceDao.delete(id)
+        sourceCache.remove(id)
+        invalidateBrowser(id)
     }
 
     /**
@@ -53,6 +83,7 @@ class NasRepository(
     suspend fun clearSongsFor(id: String) = withContext(Dispatchers.IO) {
         playlistDao.deletePlaylistRefsByNasSource(id)
         songDao.deleteByNasSource(id)
+        invalidateBrowser(id)
     }
 
     suspend fun updateScanTime(id: String) = withContext(Dispatchers.IO) {
@@ -76,19 +107,32 @@ class NasRepository(
     suspend fun updateArtworkBatches(batches: Map<String, List<String>>) =
         withContext(Dispatchers.IO) {
             for ((uri, ids) in batches) {
-                if (ids.isNotEmpty()) songDao.setArtworkUriForIds(ids, uri)
+                // 同一张封面被大量歌曲复用时同样要防 SQL 变量超限
+                ids.chunked(500).forEach { songDao.setArtworkUriForIds(it, uri) }
             }
         }
 
     suspend fun configFor(id: String): NasConfig? = withContext(Dispatchers.IO) {
-        sourceDao.get(id)?.toModel()?.toConfig()
+        sourceDao.get(id)?.toModel()?.also { sourceCache[id] = it }?.toConfig()
     }
 
-    /** 供 Media3 DataSource / 缓存任务在非协程上下文中同步获取浏览器。 */
+    /**
+     * 供 Media3 DataSource / 缓存任务在非协程上下文中同步获取浏览器。
+     * 命中缓存时完全不碰数据库；仅冷启动首次需要一次 runBlocking 读取音源配置。
+     * 配置变更/连接异常时由 save()/invalidateBrowser() 失效重建。
+     */
     fun browserFor(id: String): NasBrowser {
-        val config = runBlocking(Dispatchers.IO) { configFor(id) }
-            ?: throw IOException("网络音乐源不存在或已被删除")
-        return NasClients.create(config)
+        val source = sourceCache[id] ?: runBlocking(Dispatchers.IO) {
+            sourceDao.get(id)?.toModel()?.also { sourceCache[id] = it }
+        } ?: throw IOException("网络音乐源不存在或已被删除")
+        val fp = fingerprint(source)
+        browserCache[id]?.let { cached ->
+            if (cached.fingerprint == fp) return cached.browser
+            invalidateBrowser(id)
+        }
+        val shared = SharedBrowser(NasClients.create(source.toConfig()))
+        browserCache[id] = CachedBrowser(fp, shared)
+        return shared
     }
 
     /** 统一读取 LRC / 目录内文本文件：content://、file://、nas:// 三种来源。 */
@@ -104,15 +148,15 @@ class NasRepository(
                 try {
                     access.asInputStream().bufferedReader(Charsets.UTF_8).use { it.readText() }
                 } finally {
-                    runCatching { access.close() }
-                    runCatching { browser.close() }
+                    suspendCatching { access.close() }
+                    browser.close()
                 }
             }
-            "content" -> runCatching {
+            "content" -> suspendCatching {
                 context.contentResolver.openInputStream(uri)
                     ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
             }.getOrNull()
-            "file" -> runCatching {
+            "file" -> suspendCatching {
                 uri.path?.let { File(it).readText(Charsets.UTF_8) }
             }.getOrNull()
             else -> null

@@ -1,0 +1,15 @@
+// 工程级 ohpm 包描述。无三方依赖，全部使用系统 Kit。
+{
+  "modelVersion": "5.0.0",
+  "name": "nasmusic",
+  "version": "1.0.0",
+  "description": "NasMusic HarmonyOS NEXT 客户端工程骨架",
+  "main": "",
+  "author": "NasMusic",
+  "license": "Apache-2.0",
+  "dependencies": {},
+  "devDependencies": {
+    "@ohos/hypium": "1.0.19",
+    "@ohos/hamock": "1.0.0"
+  }
+}

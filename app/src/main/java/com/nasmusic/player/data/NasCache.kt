@@ -5,12 +5,14 @@ import android.net.Uri
 import com.nasmusic.player.core.SettingsStore
 import com.nasmusic.player.core.Song
 import com.nasmusic.player.core.parseNasUri
+import com.nasmusic.player.core.suspendCatching
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
@@ -22,6 +24,16 @@ class NasCacheManager(
     private val nasRepository: NasRepository
 ) {
     private val dir: File = File(context.cacheDir, "nas_audio").apply { mkdirs() }
+
+    // 用后台常驻收集器维护容量配置，替代 enforceLimit 里的 runBlocking（无法被取消）。
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile private var cachedLimitMb = 512
+
+    init {
+        scope.launch {
+            settings.settings.collect { cachedLimitMb = it.cacheLimitMb }
+        }
+    }
 
     private fun fileFor(songId: String): File =
         File(dir, Integer.toHexString(songId.hashCode()) + ".cache")
@@ -54,7 +66,7 @@ class NasCacheManager(
                     access.asInputStream().use { input -> input.copyTo(out, 512 * 1024) }
                 }
             } finally {
-                runCatching { access.close() }
+                suspendCatching { access.close() }
             }
             val target = fileFor(song.id)
             if (tmp.exists() && tmp.length() > 0) {
@@ -70,7 +82,7 @@ class NasCacheManager(
                 false
             }
         } finally {
-            runCatching { browser.close() }
+            suspendCatching { browser.close() }
         }
     }
 
@@ -81,7 +93,7 @@ class NasCacheManager(
             pending.chunked(3).sumOf { batch ->
                 batch.map { song ->
                     async(Dispatchers.IO) {
-                        runCatching { if (cacheSong(song)) 1 else 0 }.getOrDefault(0)
+                        suspendCatching { if (cacheSong(song)) 1 else 0 }.getOrDefault(0)
                     }
                 }.awaitAll().sum()
             }
@@ -94,8 +106,7 @@ class NasCacheManager(
 
     /** 按 LRU 删除最久未访问的缓存文件，直到不超过设置的上限。 */
     fun enforceLimit() {
-        val limitMb = runBlocking(Dispatchers.IO) { settings.settings.first().cacheLimitMb }
-        val limit = limitMb.coerceAtLeast(16) * 1024L * 1024L
+        val limit = cachedLimitMb.coerceAtLeast(16) * 1024L * 1024L
         val files = dir.listFiles()?.filter { it.name.endsWith(".cache") }
             ?.sortedBy { it.lastModified() }?.toMutableList() ?: return
         var total = files.sumOf { it.length() }
@@ -106,7 +117,17 @@ class NasCacheManager(
         }
     }
 
-    fun clear() {
-        dir.listFiles()?.forEach { runCatching { it.delete() } }
+    /**
+     * 清空缓存。[keepSongId] 指向的歌曲缓存文件会保留。
+     *
+     * 正在播放的 NAS 歌曲用的是 `file://` 缓存文件，若一并删掉，播放器下一秒就读不到数据，
+     * 表现为「清缓存把正在放的歌搞停了」。UI 会传入当前曲目 id 以跳过它。
+     */
+    fun clear(keepSongId: String? = null) {
+        val keepPath = keepSongId?.let { fileFor(it).absolutePath }
+        dir.listFiles()?.forEach { file ->
+            if (keepPath != null && file.absolutePath == keepPath) return@forEach
+            runCatching { file.delete() }
+        }
     }
 }

@@ -1,6 +1,9 @@
 package com.nasmusic.player.data
 
 import android.net.Uri
+import com.nasmusic.player.core.HttpStatusException
+import com.nasmusic.player.core.isPrivateOrLocalHost
+import com.nasmusic.player.core.readLimitedBytes
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -119,9 +122,13 @@ class FnosApi(
             val s = raw.trim().trimEnd('/')
             if (s.isEmpty()) throw IOException("请输入飞牛 NAS 地址或 FN ID")
             if (s.startsWith("http://", true) || s.startsWith("https://", true)) {
-                val url = s.removeSuffix("/music").trimEnd('/')
+                var url = s.removeSuffix("/music").trimEnd('/')
                 val host = runCatching { Uri.parse(url).host.orEmpty() }.getOrDefault("")
                 if (host.isEmpty()) throw IOException("服务器地址格式不正确")
+                // 公网地址不允许明文 HTTP，程序层面升级为 HTTPS（局域网保留 http）
+                if (url.startsWith("http://", true) && !isPrivateOrLocalHost(host)) {
+                    url = "https://" + url.removePrefix("http://")
+                }
                 val connect = isConnectUrl(url)
                 return FnosEndpoint(
                     url, host, connect, false,
@@ -228,7 +235,9 @@ class FnosApi(
         val request = signedRequest("GET", "/initialization/state", "", null, null)
         executeChecked(request).use { response ->
             if (response.code == 401 || response.code == 403) return "飞牛音乐服务可达（需要登录）"
-            if (!response.isSuccessful) throw IOException("服务器不可达：HTTP ${response.code}")
+            if (!response.isSuccessful) {
+                throw HttpStatusException(response.code, "服务器不可达：HTTP ${response.code}")
+            }
             val text = response.body?.string().orEmpty()
             if (isChallengePage(text)) throw challengeError()
             return if (relay) "FN Connect 中继可达" else "飞牛音乐服务可达"
@@ -248,7 +257,9 @@ class FnosApi(
         )
         executeChecked(request).use { response ->
             val text = response.body?.string().orEmpty()
-            if (!response.isSuccessful) throw IOException("登录失败：HTTP ${response.code}")
+            if (!response.isSuccessful) {
+                throw HttpStatusException(response.code, "登录失败：HTTP ${response.code}")
+            }
             val env = parseEnvelope(text)
             val code = env.optInt("code", -1)
             if (code != 0 && code != 200) {
@@ -292,7 +303,9 @@ class FnosApi(
         val request = signedRequest("GET", subPath, query, null, token)
         executeChecked(request).use { response ->
             if (response.code == 401 || response.code == 403) throw FnosAuthException()
-            if (!response.isSuccessful) throw IOException("请求失败：HTTP ${response.code}")
+            if (!response.isSuccessful) {
+                throw HttpStatusException(response.code, "请求失败（$subPath）：HTTP ${response.code}")
+            }
             val env = parseEnvelope(response.body?.string().orEmpty())
             val code = env.optInt("code", -1)
             if (code == 120001 || code == 401 || code == 403) throw FnosAuthException()
@@ -396,8 +409,9 @@ class FnosApi(
         executeChecked(request).use { response ->
             if (response.code == 401 || response.code == 403) throw FnosAuthException()
             if (!response.isSuccessful) return@withToken null
-            val bytes = response.body?.bytes()
-            if (bytes == null || bytes.size > 2 * 1024 * 1024) null else bytes
+            // 限流读取：读满 2MB+1 立即中断丢弃， never 全量读进内存
+            val stream = response.body?.byteStream() ?: return@withToken null
+            readLimitedBytes(stream)
         }
     }
 
@@ -407,9 +421,7 @@ class FnosApi(
         val request = signedRequest("GET", "/track/stream", query, null, token, range = "bytes=0-0")
         executeChecked(request).use { response ->
             if (response.code == 401 || response.code == 403) throw FnosAuthException()
-            if (response.code != 206 && !response.isSuccessful) {
-                throw IOException("音频流请求失败：HTTP ${response.code}")
-            }
+            requirePartialContent(response, 0L)
             response.header("Content-Range")?.substringAfterLast('/')?.toLongOrNull()
                 ?: response.header("Content-Length")?.toLongOrNull() ?: 0L
         }
@@ -431,9 +443,8 @@ class FnosApi(
         )
         executeChecked(request).use { response ->
             if (response.code == 401 || response.code == 403) throw FnosAuthException()
-            if (response.code != 206 && !response.isSuccessful) {
-                throw IOException("音频流读取失败：HTTP ${response.code}")
-            }
+            // 必须拿到真实 206 且 Content-Range 起始与 position 一致，否则数据会整体错位
+            requirePartialContent(response, position)
             val stream = response.body?.byteStream() ?: return@withToken -1
             var total = 0
             while (total < length) {

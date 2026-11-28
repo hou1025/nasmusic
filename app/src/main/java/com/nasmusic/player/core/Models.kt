@@ -7,8 +7,8 @@ import android.os.Bundle
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 
-/** FNOS = 飞牛音乐（fnOS /music/api/v1）私有网关，登录后可直接使用其曲库。 */
-enum class SourceType { LOCAL, SMB, WEBDAV, FNOS }
+/** FNOS = 飞牛音乐（fnOS /music/api/v1）私有网关；ONLINE = Subsonic 兼容在线音乐源。 */
+enum class SourceType { LOCAL, SMB, WEBDAV, FNOS, ONLINE }
 
 /**
  * 本地音乐与 NAS 音乐在 UI 层统一为同一个模型，只通过 sourceType/sourceId 区分管理。
@@ -40,6 +40,7 @@ data class Song(
             SourceType.SMB -> "NAS · SMB"
             SourceType.WEBDAV -> "NAS · WebDAV"
             SourceType.FNOS -> "飞牛音乐"
+            SourceType.ONLINE -> "在线音源"
         }
 }
 

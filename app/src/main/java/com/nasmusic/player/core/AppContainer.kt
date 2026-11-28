@@ -7,6 +7,7 @@ import com.nasmusic.player.data.LyricsLoader
 import com.nasmusic.player.data.LyricsStore
 import com.nasmusic.player.data.MusicRepository
 import com.nasmusic.player.data.NasCacheManager
+import com.nasmusic.player.data.OnlineMusicApi
 import com.nasmusic.player.data.NasCredentialsCrypto
 import com.nasmusic.player.data.NasRepository
 import com.nasmusic.player.data.NasScanner
@@ -21,6 +22,8 @@ class AppContainer(private val appContext: Context) {
     val settings by lazy { SettingsStore(appContext) }
     val playbackState by lazy { PlaybackStateStore(appContext) }
     val crypto by lazy { NasCredentialsCrypto() }
+    /** Subsonic 在线音源客户端：UI 组通过 container.onlineApi 调用测试连接/搜索等接口。 */
+    val onlineApi by lazy { OnlineMusicApi(crypto) }
 
     val musicRepository by lazy { MusicRepository(appContext, database.songDao(), settings) }
     val playlistRepository by lazy { PlaylistRepository(database.playlistDao()) }
@@ -28,7 +31,9 @@ class AppContainer(private val appContext: Context) {
         NasRepository(appContext, database.nasSourceDao(), database.songDao(), database.playlistDao(), crypto)
     }
     val nasCache by lazy { NasCacheManager(appContext, settings, nasRepository) }
-    val nasScanner by lazy { NasScanner(appContext, nasRepository, database.songDao(), settings) }
+    val nasScanner by lazy {
+        NasScanner(appContext, nasRepository, database.songDao(), settings, onlineApi)
+    }
     val lyricsLoader by lazy { LyricsLoader(appContext, nasRepository) }
     val lyricsFetcher by lazy { LyricsFetcher() }
     val lyricsStore by lazy { LyricsStore(appContext) }

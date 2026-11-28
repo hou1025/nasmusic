@@ -1,0 +1,10 @@
+// entry 模块包描述。
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "NasMusic 鸿蒙端主模块",
+  "main": "",
+  "author": "NasMusic",
+  "license": "Apache-2.0",
+  "dependencies": {}
+}

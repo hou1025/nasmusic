@@ -24,6 +24,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import java.util.Locale
@@ -44,7 +45,14 @@ class MusicRepository(
         .map { it.libraryFilter() }
         .distinctUntilChanged()
 
-    val allSongs: Flow<List<Song>> = combine(dao.all(), filterFlow) { rows, filter ->
+    // 时长阈值由 SQL 的 allFiltered 承担；文件夹排除规则仍需归一化后在内存判定。
+    // filterFlow 变化时用 flatMapLatest 换掉旧的查询流，避免残留旧条件的发射。
+    private val rowsFlow: Flow<List<SongEntity>> =
+        filterFlow.map { it.minDurationSec.coerceAtLeast(0) * 1000L }
+            .distinctUntilChanged()
+            .flatMapLatest { dao.allFiltered(it) }
+
+    val allSongs: Flow<List<Song>> = combine(rowsFlow, filterFlow) { rows, filter ->
         rows.map { it.toSong() }.filter { it.isAllowedBy(filter) }
     }
 
@@ -97,6 +105,18 @@ class MusicRepository(
     suspend fun setFavorite(id: String, favorite: Boolean) =
         withContext(Dispatchers.IO) { dao.setFavorite(id, favorite) }
 
+    /**
+     * 原子取反收藏，返回取反后的状态。
+     *
+     * 以数据库当前值为基准，而不是 UI 传进来的 Song 快照：列表/播放页里的 Song 可能是
+     * 几秒前读出来的旧对象，连续点两次会算成同一个目标值（收藏→收藏），表现就是"点了没反应"。
+     */
+    suspend fun toggleFavorite(id: String): Boolean = withContext(Dispatchers.IO) {
+        val next = !(dao.byId(id)?.isFavorite ?: false)
+        dao.setFavorite(id, next)
+        next
+    }
+
     suspend fun updateTags(id: String, title: String, artist: String, album: String) =
         withContext(Dispatchers.IO) { dao.updateTags(id, title, artist, album) }
 
@@ -116,15 +136,19 @@ class MusicRepository(
     suspend fun purgeFiltered(): Int = withContext(Dispatchers.IO) {
         val filter = settings.snapshot().libraryFilter()
         val ids = dao.allEntities().filterNot { it.toSong().isAllowedBy(filter) }.map { it.id }
-        if (ids.isNotEmpty()) dao.deleteByIds(ids)
+        // SQLite 变量上限在旧设备仅 999，整库 id 必须分批删除
+        ids.chunked(500).forEach { dao.deleteByIds(it) }
         ids.size
     }
 
     /** 排除某个文件夹时，把该文件夹（含子目录）下的歌曲从索引中删除。 */
     suspend fun deleteFolder(folder: String): Int = withContext(Dispatchers.IO) {
+        val filter = settings.snapshot().libraryFilter()
         val rules = setOf(folder)
-        val ids = dao.allEntities().filter { isExcludedFolder(it.folder, rules) }.map { it.id }
-        if (ids.isNotEmpty()) dao.deleteByIds(ids)
+        val ids = dao.allEntities()
+            .filter { isExcludedFolder(it.folder, rules, filter.matchMode) }
+            .map { it.id }
+        ids.chunked(500).forEach { dao.deleteByIds(it) }
         ids.size
     }
 
@@ -173,7 +197,7 @@ class MusicRepository(
                     cursor.str(MediaStore.Audio.Media.DATA).substringBeforeLast('/', "")
                 }
                 if (thresholdMs > 0 && duration > 0 && duration < thresholdMs) continue
-                if (isExcludedFolder(relative, filter.excludedFolders)) continue
+                if (isExcludedFolder(relative, filter.excludedFolders, filter.matchMode)) continue
 
                 val mediaId = cursor.lng(MediaStore.Audio.Media._ID)
                 val albumId = cursor.lng(MediaStore.Audio.Media.ALBUM_ID)
@@ -215,7 +239,7 @@ class MusicRepository(
             }
             if (changed.isNotEmpty()) dao.upsert(changed)
             // 仅清理由 MediaStore 建立、但设备上已删除的记录；不影响手动添加的文件夹曲目
-            dao.deleteStaleLocalMedia(found.map { it.id })
+            found.map { it.id }.chunked(500).forEach { dao.deleteStaleLocalMedia(it) }
         }
         purgeFiltered()
         found.size
@@ -235,7 +259,7 @@ class MusicRepository(
                     walk(file)
                 } else {
                     val name = file.name ?: continue
-                    if (!isAudioFile(name) || isExcludedFolder(folderName, filter.excludedFolders)) continue
+                    if (!isAudioFile(name) || isExcludedFolder(folderName, filter.excludedFolders, filter.matchMode)) continue
                     val uri = file.uri.toString()
                     val durationMs = if (thresholdMs > 0) {
                         runCatching {
@@ -265,7 +289,7 @@ class MusicRepository(
             dao.upsert(found)
             // 按文件夹限定清理范围：只删除当前文件夹内已失效的条目，
             // 否则添加第二个文件夹会把第一个文件夹导入的歌曲一起删掉。
-            dao.deleteStaleFolderIn(folderName, found.map { it.id })
+            found.map { it.id }.chunked(500).forEach { dao.deleteStaleFolderIn(folderName, it) }
         }
         purgeFiltered()
         found.size

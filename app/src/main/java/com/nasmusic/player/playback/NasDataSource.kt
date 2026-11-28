@@ -32,6 +32,7 @@ class NasDataSource(private val nasRepository: NasRepository) : BaseDataSource(t
     private var dataSpec: DataSpec? = null
     private var currentPosition = 0L
     private var bytesRemaining = 0L
+    private var totalLength = 0L
     private var opened = false
     // 上游返回过真实 EOF 后置位：即使长度未知（bytesRemaining 为 Long.MAX_VALUE），
     // 下一次读取也立即结束，让 Media3 触发 STATE_ENDED 并自动切下一曲。
@@ -49,12 +50,20 @@ class NasDataSource(private val nasRepository: NasRepository) : BaseDataSource(t
         val (sourceId, path) = parseNasUri(uriString)
             ?: throw IOException("无效的 NAS 音乐地址：$uriString")
 
-        val b = nasRepository.browserFor(sourceId)
+        var b = nasRepository.browserFor(sourceId)
+        val a = try {
+            b.open(path)
+        } catch (e: IOException) {
+            // 连接已失效：让仓库销毁缓存的浏览器，重建一次再试
+            nasRepository.invalidateBrowser(sourceId)
+            b = nasRepository.browserFor(sourceId)
+            b.open(path)
+        }
         browser = b
-        val a = b.open(path)
         access = a
 
         val total = a.length
+        totalLength = total
         val unknownLength = total <= 0
         if (!unknownLength && spec.position > total) {
             closeInternal()
@@ -86,15 +95,27 @@ class NasDataSource(private val nasRepository: NasRepository) : BaseDataSource(t
             currentPosition < aheadStart || currentPosition >= aheadStart + aheadLength
         ) {
             val chunk = min(READ_AHEAD_BYTES.toLong(), bytesRemaining).toInt()
-            val filled = source.readAt(currentPosition, ahead, 0, chunk)
+            // 短读补齐（与 TagReader.NasRandomAccessReader 同策略）：
+            // HTTP Range 到文件尾、FN Connect 中继限速都可能一次只返回部分字节，
+            // 绝不能把「短读」直接当 EOF，否则播到一半就自动切下一曲。
+            var filled = 0
+            while (filled < chunk) {
+                val n = source.readAt(currentPosition + filled, ahead, filled, chunk - filled)
+                if (n <= 0) break
+                filled += n
+            }
             if (filled <= 0) {
                 reachedEof = true
                 return C.RESULT_END_OF_INPUT
             }
-            // 上游返回的字节数少于请求量（HTTP Range 到文件尾的正常表现）：
-            // 把剩余量修正为实际读到的字节数。长度未知（bytesRemaining 为 MAX_VALUE）时，
-            // 这样读完这批 bytesRemaining 归零，Media3 才能收到 EOF、触发 STATE_ENDED
-            // 并自动切下一曲；否则会当成无限流永远播不完。
+            val reachedPhysicalEnd = totalLength > 0 && currentPosition + filled >= totalLength
+            if (filled < chunk && !reachedPhysicalEnd) {
+                throw IOException(
+                    "读取远程音频发生异常短读：位置 $currentPosition，已读 $filled/$chunk 字节"
+                )
+            }
+            // 只有真到文件尾才把剩余量修正为实际读到的字节数。长度未知时（bytesRemaining
+            // 为 MAX_VALUE），这样读完这批即归零，Media3 收到 EOF 才会自动切下一曲。
             if (filled < chunk) bytesRemaining = filled.toLong()
             aheadStart = currentPosition
             aheadLength = filled

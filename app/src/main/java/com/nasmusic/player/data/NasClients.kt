@@ -14,11 +14,17 @@ import com.hierynomus.smbj.auth.AuthenticationContext
 import com.hierynomus.smbj.connection.Connection
 import com.hierynomus.smbj.session.Session
 import com.hierynomus.smbj.share.DiskShare
+import com.nasmusic.player.core.HttpStatusException
+import com.nasmusic.player.core.NasSource
 import com.nasmusic.player.core.SourceType
+import com.nasmusic.player.core.isPrivateOrLocalHost
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import okhttp3.Credentials
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.xmlpull.v1.XmlPullParser
 import java.io.IOException
@@ -27,6 +33,7 @@ import java.io.StringReader
 import java.net.URI
 import java.net.URLDecoder
 import java.security.KeyStore
+import javax.crypto.BadPaddingException
 import java.text.SimpleDateFormat
 import java.util.EnumSet
 import java.util.Locale
@@ -129,15 +136,55 @@ class NasCredentialsCrypto {
 
     fun decrypt(encoded: String): String {
         if (encoded.isEmpty()) return ""
-        return runCatching {
-            val combined = Base64.decode(encoded, Base64.NO_WRAP)
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            val iv = combined.copyOfRange(0, 12)
-            cipher.init(Cipher.DECRYPT_MODE, secretKey(), GCMParameterSpec(128, iv))
+        val combined = try {
+            Base64.decode(encoded, Base64.NO_WRAP)
+        } catch (e: IllegalArgumentException) {
+            throw CredentialsInvalidException("凭据编码格式损坏，请删除该音源后重新录入账号密码")
+        }
+        if (combined.size <= 12) {
+            throw CredentialsInvalidException("凭据数据不完整，请删除该音源后重新录入账号密码")
+        }
+        val cipher = try {
+            Cipher.getInstance("AES/GCM/NoPadding").apply {
+                init(
+                    Cipher.DECRYPT_MODE,
+                    secretKey(),
+                    GCMParameterSpec(128, combined.copyOfRange(0, 12))
+                )
+            }
+        } catch (e: java.security.GeneralSecurityException) {
+            throw CredentialsInvalidException("设备密钥不可用，请删除该音源后重新录入账号密码")
+        }
+        return try {
             String(cipher.doFinal(combined, 12, combined.size - 12), Charsets.UTF_8)
-        }.getOrDefault("")
+        } catch (e: BadPaddingException) {
+            // 换设备/Keystore 密钥变化导致密文无法认证：给出可操作的提示，绝不静默变空密码
+            throw CredentialsInvalidException("凭据校验失败（密钥已变更或密文损坏），请删除该音源后重新录入账号密码")
+        } catch (e: java.security.GeneralSecurityException) {
+            throw CredentialsInvalidException("凭据解密失败：${e.message.orEmpty()}，请重新录入账号密码")
+        }
     }
+}
 
+/** 凭据不可用：需要用户重新录入，而不是当作「账号或密码错误」重试。 */
+class CredentialsInvalidException(message: String) : IOException(message)
+
+/** 随机访问读取必须拿到真实的 206 响应，否则从响应开头消费字节会造成音频错位。 */
+internal fun requirePartialContent(response: Response, position: Long) {
+    if (response.code == 200 || (!response.isSuccessful && response.code != 206)) {
+        throw HttpStatusException(
+            response.code,
+            "服务器未返回 206 Partial Content（HTTP ${response.code}），不支持拖动播放，请检查服务器 Range 配置"
+        )
+    }
+    if (response.code != 206) return
+    val range = response.header("Content-Range")
+    if (!range.isNullOrBlank()) {
+        val start = range.substringAfter("bytes ", "").substringBefore('-').trim().toLongOrNull()
+        if (start != null && start != position) {
+            throw IOException("Content-Range 起始字节 $start 与请求位置 $position 不一致，已拒绝错位数据")
+        }
+    }
 }
 
 object NasClients {
@@ -145,6 +192,7 @@ object NasClients {
         SourceType.SMB -> SmbBrowser(config)
         SourceType.WEBDAV -> WebDavBrowser(config)
         SourceType.FNOS -> FnosBrowser(config)
+        SourceType.ONLINE -> OnlineBrowser(config, OnlineMusicApi(NasCredentialsCrypto()))
         SourceType.LOCAL -> throw IllegalArgumentException("本地音乐不需要 NAS 客户端")
     }
 }
@@ -264,10 +312,19 @@ class WebDavBrowser(private val config: NasConfig) : NasBrowser {
     // 复用全局连接池：避免每次切歌/扫描都重新握手，远程 WebDAV 提速明显
     private val client = NasHttp.client
 
-    private val basePath: String = runCatching { URI(config.baseUrl).path.trimEnd('/') }.getOrDefault("")
+    // 公网地址强制 HTTPS；只有私网/本机才允许明文 HTTP（Manifest 层面仍保留 cleartext 开关）
+    private val baseUrl: String = run {
+        val raw = config.baseUrl.trim().trimEnd('/')
+        if (raw.startsWith("http://", true)) {
+            val host = runCatching { URI(raw).host.orEmpty() }.getOrDefault("")
+            if (!isPrivateOrLocalHost(host)) "https://" + raw.removePrefix("http://") else raw
+        } else raw
+    }
+
+    private val basePath: String = runCatching { URI(baseUrl).path.trimEnd('/') }.getOrDefault("")
 
     private fun urlOf(path: String): String {
-        val base = config.baseUrl.trimEnd('/')
+        val base = baseUrl.trimEnd('/')
         val encoded = path.trim('/').split('/').filter { it.isNotEmpty() }
             .joinToString("/") { Uri.encode(it) }
         return if (encoded.isEmpty()) "$base/" else "$base/$encoded"
@@ -357,9 +414,7 @@ class WebDavBrowser(private val config: NasConfig) : NasBrowser {
                     .get()
                     .build()
                 client.newCall(request).execute().use { response ->
-                    if (response.code != 206 && !response.isSuccessful) {
-                        throw IOException("WebDAV 范围读取失败: HTTP ${response.code}")
-                    }
+                    requirePartialContent(response, position)
                     val stream = response.body?.byteStream() ?: return -1
                     var total = 0
                     while (total < length) {
@@ -382,11 +437,47 @@ class WebDavBrowser(private val config: NasConfig) : NasBrowser {
             .get()
             .build()
         client.newCall(request).execute().use { response ->
+            requirePartialContent(response, 0L)
             val range = response.header("Content-Range")?.substringAfterLast('/')?.toLongOrNull()
             return range ?: response.header("Content-Length")?.toLongOrNull() ?: 0L
         }
     }
 
     /** 共享客户端由全局管理，此处不关闭。 */
+    override fun close() = Unit
+}
+
+/**
+ * Subsonic 兼容在线音源：目录浏览展示整库曲目，播放由 OnlineMusicApi 生成可直接播放的 https 直链。
+ * 因此 NasDataSource 通常不会介入在线曲目；open() 仅服务于缓存/歌词等随机读取场景。
+ */
+class OnlineBrowser(
+    private val config: NasConfig,
+    private val api: OnlineMusicApi
+) : NasBrowser {
+    private val source: NasSource = api.sourceOf(config)
+
+    override fun listDir(path: String): List<NasEntry> {
+        if (path.trim('/').isNotEmpty()) return emptyList()
+        // NasBrowser 接口是同步的（Media3 DataSource/连接探测在后台线程调用），此处桥接一次
+        val songs = runBlocking(Dispatchers.IO) { api.listRoot(source) }
+        return songs.map { song ->
+            NasEntry(
+                name = song.title.ifBlank { song.id },
+                // Song.id 形如 nas:<sourceId>:<songId>，只把 songId 交给 open()
+                path = song.id.substringAfterLast(':'),
+                isDirectory = false,
+                sizeBytes = song.sizeBytes,
+                lastModified = song.lastModified
+            )
+        }
+    }
+
+    override fun open(path: String): NasRandomAccess {
+        val songId = path.trim('/')
+        if (songId.isEmpty()) throw IOException("无效的在线曲目")
+        return api.randomAccess(source, songId)
+    }
+
     override fun close() = Unit
 }

@@ -23,6 +23,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -41,6 +43,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -405,13 +411,19 @@ fun LabeledValue(label: String, value: String) {
     }
 }
 
-/** 设置页分区卡片，统一留白与圆角，减少视觉噪声。 */
+/**
+ * 设置页分区卡片，统一留白与圆角，减少视觉噪声。
+ * collapsible=true 时默认折叠，点标题栏展开/收起；折叠状态按标题保存，旋转后保留。
+ * 音效调音面板等需要一屏看全的场景保持默认（false，始终展开）。
+ */
 @Composable
 fun SectionCard(
     title: String,
     icon: ImageVector? = null,
+    collapsible: Boolean = false,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    var expanded by rememberSaveable(title) { mutableStateOf(!collapsible) }
     Card(
         modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
         shape = RoundedCornerShape(20.dp),
@@ -421,7 +433,13 @@ fun SectionCard(
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = if (collapsible) Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded }
+                else Modifier
+            ) {
                 if (icon != null) {
                     Icon(
                         icon,
@@ -431,10 +449,25 @@ fun SectionCard(
                     )
                     Spacer(Modifier.width(8.dp))
                 }
-                Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.weight(1f)
+                )
+                if (collapsible) {
+                    Icon(
+                        if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                        contentDescription = if (expanded) "收起$title" else "展开$title",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
             }
-            Spacer(Modifier.height(10.dp))
-            content()
+            if (expanded) {
+                Spacer(Modifier.height(10.dp))
+                content()
+            }
         }
     }
 }

@@ -18,6 +18,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -54,8 +55,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.LibraryMusic
@@ -88,9 +91,11 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -117,8 +122,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.Player
-import coil.ImageLoader
 import coil.compose.AsyncImage
+import coil.imageLoader
 import coil.request.ImageRequest
 import coil.request.SuccessResult
 import com.nasmusic.player.core.Song
@@ -127,6 +132,7 @@ import com.nasmusic.player.core.formatSize
 import com.nasmusic.player.data.LyricCandidate
 import com.nasmusic.player.data.Lyrics
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlin.math.cos
 import kotlin.math.sin
@@ -162,6 +168,103 @@ private fun TabLabel(label: String, active: Boolean, onClick: () -> Unit) {
                     RoundedCornerShape(2.dp)
                 )
         )
+    }
+}
+
+/**
+ * 顶栏文字按钮：以文字代替图标，横竖屏通用。
+ * 高度与内边距可由调用方指定——车机用大触控目标，手机竖屏用紧凑胶囊。
+ *
+ * 竖屏 compact 模式的视觉规范：
+ *  - 胶囊外形（50% 圆角）、统一高度，替代原来零散的灰色小方块；
+ *  - emphasized=true 的主操作（音乐列表）用强调色实心胶囊，形成主次层次；
+ *  - 其余用低对比描边胶囊，整体清爽不抢眼。
+ */
+@Composable
+private fun TopTextButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    minHeight: Dp = 38.dp,
+    horizontalPadding: Dp = 8.dp,
+    active: Boolean = false,
+    color: Color? = null,
+    // 紧凑模式：竖屏顶栏用胶囊按钮
+    compact: Boolean = false,
+    // 主操作强调（如音乐列表）：实心强调色；false 为浅色描边胶囊
+    emphasized: Boolean = false
+) {
+    // 竖屏胶囊：主按钮用 primary 实心 + onPrimary 文字；其余低对比描边
+    val pillBg = when {
+        compact && emphasized -> MaterialTheme.colorScheme.primary
+        compact -> MaterialTheme.colorScheme.surface.copy(alpha = 0.55f)
+        else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+    }
+    val pillBorder = if (compact && !emphasized)
+        BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.28f)) else null
+    val resolvedColor = if (compact && emphasized) MaterialTheme.colorScheme.onPrimary
+    else color ?: if (active) MaterialTheme.colorScheme.primary
+    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.88f)
+    val pad = if (compact) 11.dp else horizontalPadding
+    val shape = if (compact) RoundedCornerShape(50) else RoundedCornerShape(8.dp)
+    Surface(
+        shape = shape,
+        color = pillBg,
+        border = pillBorder,
+        modifier = modifier
+            .height(if (compact) 36.dp else minHeight)
+            .clickable(onClick = onClick)
+    ) {
+        Box(
+            Modifier.fillMaxSize().padding(horizontal = pad),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text,
+                style = if (compact) MaterialTheme.typography.labelLarge
+                else MaterialTheme.typography.bodyMedium,
+                color = resolvedColor,
+                maxLines = 1,
+                softWrap = false
+            )
+        }
+    }
+}
+
+/**
+ * 歌词自动跟随：用户正在手动滚动时暂停跟随；停止滚动 3 秒后再恢复。
+ * 手机/车机两份播放页共用，避免一处修了另一处仍旧“拽回”。
+ */
+@Composable
+private fun rememberLyricsAutoFollow(
+    listState: LazyListState,
+    currentLine: Int,
+    active: Boolean
+) {
+    val resumeAt = remember { mutableLongStateOf(0L) }
+    LaunchedEffect(listState) {
+        var wasScrolling = false
+        snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
+            if (scrolling) {
+                wasScrolling = true
+                resumeAt.longValue = Long.MAX_VALUE
+            } else if (wasScrolling) {
+                wasScrolling = false
+                resumeAt.longValue = System.currentTimeMillis() + 3_000L
+            }
+        }
+    }
+    LaunchedEffect(currentLine, active) {
+        if (!active || currentLine < 0) return@LaunchedEffect
+        // 分段等待：用户在等待期间再次滚动时，deadline 会被推后，循环重新读取。
+        while (true) {
+            val remaining = resumeAt.longValue - System.currentTimeMillis()
+            if (remaining <= 0) break
+            delay(minOf(remaining, 100L))
+        }
+        if (listState.isScrollInProgress) return@LaunchedEffect
+        val target = (currentLine - 1).coerceAtLeast(0)
+        if (listState.firstVisibleItemIndex != target) listState.animateScrollToItem(target)
     }
 }
 
@@ -236,10 +339,13 @@ private fun CircleButton(
     val rippleProgress by ripple.asState()
 
     val infinite = rememberInfiniteTransition()
-    val breathe by infinite.animateFloat(
-        0f, 1f,
-        infiniteRepeatable(tween(2200, easing = FastOutSlowInEasing), RepeatMode.Reverse)
-    )
+    // 暂停时不注册子动画：InfiniteTransition 无子动画即停摆，避免后台常开 60fps 重绘
+    val breathe = if (playing) {
+        infinite.animateFloat(
+            0f, 1f,
+            infiniteRepeatable(tween(2200, easing = FastOutSlowInEasing), RepeatMode.Reverse)
+        ).value
+    } else 0f
     val breath = if (playing) 0.13f + 0.11f * breathe else 0f
 
     // 五个键统一同一套中性色：只靠尺寸与进度环区分主次，不再有紫色实心键
@@ -489,7 +595,8 @@ private suspend fun loadArtworkAccent(context: Context, uri: String?): Color? {
                 .allowHardware(false)
                 .size(64)
                 .build()
-            val drawable = (ImageLoader(context).execute(request) as? SuccessResult)?.drawable
+            // 复用全局 Coil 实例，避免每次换歌都新建 loader（重复线程池/缓存开销）
+            val drawable = (context.imageLoader.execute(request) as? SuccessResult)?.drawable
             val bitmap = when (drawable) {
                 is BitmapDrawable -> drawable.bitmap
                 null -> null
@@ -595,13 +702,15 @@ fun PlayerScreen(
     playerVm: PlayerViewModel,
     onBack: () -> Unit,
     onOpenLibrary: () -> Unit,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    onOpenSources: () -> Unit = {},
+    onOpenSound: () -> Unit = {}
 ) {
-    // 车机 / 宽屏横屏走左右双栏；手机竖屏保留原版沉浸式单列布局
+    // 车机 / 宽屏横屏走左右双栏；手机竖屏保留原版沉浸式单列布局。
     if (LocalCarMetrics.current.enabled) {
-        CarPlayerScreen(vm, playerVm, onBack, onOpenLibrary, onOpenSettings)
+        CarPlayerScreen(vm, playerVm, onBack, onOpenLibrary, onOpenSettings, onOpenSources, onOpenSound)
     } else {
-        PhonePlayerScreen(vm, playerVm, onBack, onOpenLibrary, onOpenSettings)
+        PhonePlayerScreen(vm, playerVm, onBack, onOpenLibrary, onOpenSettings, onOpenSources, onOpenSound)
     }
 }
 
@@ -612,7 +721,9 @@ private fun PhonePlayerScreen(
     playerVm: PlayerViewModel,
     onBack: () -> Unit,
     onOpenLibrary: () -> Unit,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    onOpenSources: () -> Unit = {},
+    onOpenSound: () -> Unit = {}
 ) {
     val state by playerVm.state.collectAsStateWithLifecycle()
     val lyrics by playerVm.lyrics.collectAsStateWithLifecycle()
@@ -646,13 +757,8 @@ private fun PhonePlayerScreen(
 
     val lyricsListState = rememberLazyListState()
     val currentLine = lyrics?.indexAt(state.positionMs) ?: -1
-    if (tab == PlayerTab.LYRICS) {
-        LaunchedEffect(currentLine) {
-            if (currentLine >= 0) {
-                lyricsListState.animateScrollToItem((currentLine - 1).coerceAtLeast(0))
-            }
-        }
-    }
+    // 封面歌词已整合同屏，两个视图都含歌词列表，始终自动跟随
+    rememberLyricsAutoFollow(lyricsListState, currentLine, true)
 
     if (song == null) {
         val fg = MaterialTheme.colorScheme.onSurface
@@ -664,30 +770,39 @@ private fun PhonePlayerScreen(
                     .statusBarsPadding()
             ) {
                 Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp),
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 6.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
+                    // 收起箭头：圆形胶囊背景，与右侧按钮视觉语言统一
+                    Box(
+                        Modifier
+                            .size(36.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.55f))
+                            .clickable(onClick = onBack),
+                        contentAlignment = Alignment.Center
+                    ) {
                         Icon(
                             Icons.Default.KeyboardArrowDown,
                             contentDescription = "收起",
                             tint = fg,
-                            modifier = Modifier.size(30.dp)
+                            modifier = Modifier.size(24.dp)
                         )
                     }
-                    Text("音乐", style = MaterialTheme.typography.titleMedium, color = fg)
-                    Spacer(Modifier.weight(1f))
-                    IconButton(onClick = { searchMode = true }) {
-                        Icon(
-                            Icons.Default.Search,
-                            contentDescription = "搜索",
-                            tint = fg.copy(alpha = 0.72f)
-                        )
-                    }
+                    Spacer(Modifier.width(8.dp))
+                    // 与有歌曲时保持一致：音乐列表（主操作）→ 搜索 → 音源 → 音效 → 设置 → 更多
+                    TopTextButton("音乐列表", { onOpenLibrary() }, compact = true, emphasized = true)
+                    Spacer(Modifier.width(7.dp))
+                    TopTextButton("搜索", { searchMode = true }, compact = true)
+                    Spacer(Modifier.width(7.dp))
+                    TopTextButton("音源", onOpenSources, compact = true)
+                    Spacer(Modifier.width(7.dp))
+                    TopTextButton("音效", onOpenSound, compact = true)
+                    Spacer(Modifier.width(7.dp))
+                    TopTextButton("设置", { onOpenSettings() }, compact = true)
+                    Spacer(Modifier.width(7.dp))
                     Box {
-                        IconButton(onClick = { showMore = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "更多操作", tint = fg)
-                        }
+                        TopTextButton("更多", { showMore = true }, compact = true)
                         DropdownMenu(expanded = showMore, onDismissRequest = { showMore = false }) {
                             DropdownMenuItem(
                                 text = { Text("设置") },
@@ -760,7 +875,6 @@ private fun PhonePlayerScreen(
     // 封面区不再吃掉全部剩余高度，让歌名与歌词整体上移
     val coverHeight = (LocalConfiguration.current.screenHeightDp.dp * 0.34f)
         .coerceIn(150.dp, 280.dp)
-    val isCoverTab = tab == PlayerTab.COVER
     val modeLabel = when {
         state.shuffle -> "随机播放"
         state.repeatMode == Player.REPEAT_MODE_ONE -> "单曲循环"
@@ -781,46 +895,47 @@ private fun PhonePlayerScreen(
         ) {
                 // 顶部：下拉收起 + 文字标签（下划线选中）+ 搜索/信息/更多
                 Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 2.dp),
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 6.dp, vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                IconButton(onClick = onBack, modifier = Modifier.size(44.dp)) {
+                // 收起箭头：圆形胶囊背景，与右侧按钮视觉语言统一
+                Box(
+                    Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.55f))
+                        .clickable(onClick = onBack),
+                    contentAlignment = Alignment.Center
+                ) {
                     Icon(
                         Icons.Default.KeyboardArrowDown,
                         contentDescription = "收起",
                         tint = foreground,
-                        modifier = Modifier.size(28.dp)
+                        modifier = Modifier.size(24.dp)
                     )
                 }
-                Row(
-                    Modifier.weight(1f),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    PlayerTab.values().forEach { item ->
-                        TabLabel(item.label, tab == item) { tab = item }
-                    }
-                    // 队列入口取消，第三个位置改为「音乐列表」
-                    TabLabel("音乐列表", false) { onOpenLibrary() }
-                }
-                IconButton(onClick = { searchMode = true }, modifier = Modifier.size(42.dp)) {
-                    Icon(
-                        Icons.Default.Search,
-                        contentDescription = "搜索",
-                        tint = foreground.copy(alpha = 0.72f),
-                        modifier = Modifier.size(21.dp)
-                    )
-                }
+                Spacer(Modifier.width(8.dp))
+                // 文字按钮按使用频率从左到右：音乐列表（最常用·主操作）→ 搜索 → 音源 → 音效 → 设置 → 更多
+                // horizontalScroll 下 weight 无法测量，改用固定间距；窄屏可横向滑动访问全部按钮
+                TopTextButton("音乐列表", { onOpenLibrary() }, compact = true, emphasized = true)
+                Spacer(Modifier.width(7.dp))
+                TopTextButton("搜索", { searchMode = true }, compact = true)
+                Spacer(Modifier.width(7.dp))
+                TopTextButton("音源", onOpenSources, compact = true)
+                Spacer(Modifier.width(7.dp))
+                TopTextButton("音效", onOpenSound, compact = true)
+                Spacer(Modifier.width(7.dp))
+                TopTextButton("设置", { onOpenSettings() }, compact = true)
+                Spacer(Modifier.width(7.dp))
                 Box {
-                    IconButton(onClick = { showMore = true }, modifier = Modifier.size(42.dp)) {
-                        Icon(
-                            Icons.Default.MoreVert,
-                            contentDescription = "更多操作",
-                            tint = foreground.copy(alpha = 0.72f)
-                        )
-                    }
+                    TopTextButton("更多", { showMore = true }, compact = true)
                     DropdownMenu(expanded = showMore, onDismissRequest = { showMore = false }) {
                         // 导航
+                        DropdownMenuItem(
+                            text = { Text("网络音乐源") },
+                            leadingIcon = { Icon(Icons.Default.Cloud, contentDescription = null) },
+                            onClick = { showMore = false; onOpenSources() }
+                        )
                         DropdownMenuItem(
                             text = { Text("设置") },
                             leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },
@@ -920,55 +1035,81 @@ private fun PhonePlayerScreen(
                 }
             }
 
-            // 中间内容区：封面页限制高度把歌名/歌词抬上去，歌词页与队列页仍占满剩余空间
-            val contentModifier = if (isCoverTab) {
-                Modifier.fillMaxWidth().height(coverHeight).padding(horizontal = 10.dp, vertical = 4.dp)
-            } else {
-                Modifier.fillMaxWidth().weight(1f).padding(horizontal = 10.dp, vertical = 4.dp)
-            }
+            // 中间内容区：封面歌词整合后统一占满剩余空间，上半封面 + 下半滚动歌词
+            val contentModifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .padding(horizontal = 10.dp, vertical = 4.dp)
             Box(contentModifier, contentAlignment = Alignment.Center) {
                 when (tab) {
                     PlayerTab.COVER -> {
-                        // 封面主色向外扩散的光晕
-                        Box(
-                            Modifier
-                                .size(coverHeight * 1.16f)
-                                .background(
-                                    Brush.radialGradient(
-                                        listOf(
-                                            accent.color.copy(
-                                                alpha = if (accent.fromArtwork) 0.34f else 0.22f
+                        // 封面 + 歌词整合视图：上半封面（缩小让出空间），下半滚动歌词
+                        Column(
+                            Modifier.fillMaxSize(),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            val artSize = (coverHeight * 0.62f).coerceIn(96.dp, 180.dp)
+                            val artShape = RoundedCornerShape(20.dp)
+                            Box(
+                                Modifier
+                                    .size(artSize * 1.12f),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Box(
+                                    Modifier
+                                        .size(artSize * 1.12f)
+                                        .background(
+                                            Brush.radialGradient(
+                                                listOf(
+                                                    accent.color.copy(
+                                                        alpha = if (accent.fromArtwork) 0.30f else 0.20f
+                                                    ),
+                                                    Color.Transparent
+                                                )
                                             ),
-                                            Color.Transparent
+                                            shape = CircleShape
                                         )
-                                    ),
-                                    shape = CircleShape
                                 )
-                        )
-                        val artSize = coverHeight - 16.dp
-                        val artShape = RoundedCornerShape(28.dp)
-                        Box(Modifier.size(artSize), contentAlignment = Alignment.Center) {
-                            // 动态光影常驻底层：封面缺失、下载中或加载失败时都不会留白
-                            AnimatedCoverPlaceholder(
-                                accent = accent.color,
-                                primary = MaterialTheme.colorScheme.primary,
-                                foreground = foreground,
-                                playing = state.isPlaying,
-                                shape = artShape,
-                                modifier = Modifier.size(artSize)
-                            )
-                            Crossfade(targetState = effectiveArtwork, label = "coverFade") { uri ->
-                                if (uri != null) {
-                                    AsyncImage(
-                                        model = uri,
-                                        contentDescription = "专辑封面",
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier
-                                            .size(artSize)
-                                            .clip(artShape)
-                                            .border(1.dp, foreground.copy(alpha = 0.10f), artShape)
+                                Box(Modifier.size(artSize), contentAlignment = Alignment.Center) {
+                                    AnimatedCoverPlaceholder(
+                                        accent = accent.color,
+                                        primary = MaterialTheme.colorScheme.primary,
+                                        foreground = foreground,
+                                        playing = state.isPlaying,
+                                        shape = artShape,
+                                        modifier = Modifier.size(artSize)
                                     )
+                                    Crossfade(targetState = effectiveArtwork, label = "coverFade") { uri ->
+                                        if (uri != null) {
+                                            AsyncImage(
+                                                model = uri,
+                                                contentDescription = "专辑封面",
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier
+                                                    .size(artSize)
+                                                    .clip(artShape)
+                                                    .border(1.dp, foreground.copy(alpha = 0.10f), artShape)
+                                            )
+                                        }
+                                    }
                                 }
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            // 下半：滚动歌词（当前行高亮），可点击切换到纯歌词大视图
+                            Box(
+                                Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth()
+                                    .lyricsFade()
+                                    .clickable { tab = PlayerTab.LYRICS },
+                                contentAlignment = Alignment.TopCenter
+                            ) {
+                                CombinedLyrics(
+                                    lyrics = lyrics,
+                                    currentLine = currentLine,
+                                    listState = lyricsListState,
+                                    foreground = foreground
+                                )
                             }
                         }
                     }
@@ -1089,48 +1230,7 @@ private fun PhonePlayerScreen(
                 }
             }
 
-            // 两行歌词：点一下切到完整歌词（从顶部开始）
-            if (tab == PlayerTab.COVER) {
-                val lines = lyrics?.lines.orEmpty()
-                val first = lines.getOrNull(currentLine)?.text
-                    ?: "暂无歌词 · 点这里查看"
-                val second = lines.getOrNull(currentLine + 1)?.text.orEmpty()
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 54.dp)
-                        .clickable { tab = PlayerTab.LYRICS }
-                        .padding(horizontal = 24.dp, vertical = 6.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    // 换句时旧句淡出、新句淡入，不再瞬间替换
-                    Crossfade(targetState = first, animationSpec = tween(460)) { text ->
-                        Text(
-                            text,
-                            style = MaterialTheme.typography.titleLarge,
-                            color = foreground.copy(alpha = 0.95f),
-                            maxLines = 1,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                    Crossfade(targetState = second, animationSpec = tween(460)) { text ->
-                        if (text.isNotBlank()) {
-                            Text(
-                                text,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = foreground.copy(alpha = 0.68f),
-                                maxLines = 1,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
-                            )
-                        }
-                    }
-                }
-            }
-
-            // 封面页把剩余空间留在歌词与进度条之间，进度条与控制区仍贴底
-            if (isCoverTab) Spacer(Modifier.weight(1f))
+            // 封面与歌词已整合到上方内容区，进度条与控制区紧贴其下
 
             Slider(
                 value = sliderValue,
@@ -1366,12 +1466,13 @@ private fun PhonePlayerScreen(
             title = { Text("播放队列") },
             text = {
                 LazyColumn(Modifier.heightIn(max = 320.dp)) {
-                    items(state.queue, key = { it.id }) { item ->
+                    itemsIndexed(state.queue, key = { index, item -> "${item.id}-$index" }) { index, item ->
                         Row(
                             Modifier
                                 .fillMaxWidth()
                                 .clickable {
-                                    playerVm.playSongs(state.queue, state.queue.indexOf(item))
+                                    // 队列可能含重复曲目，必须用下标定位，indexOf 会永远命中第一首
+                                    playerVm.playSongs(state.queue, index)
                                     showQueue = false
                                 }
                                 .padding(vertical = 8.dp, horizontal = 4.dp),
@@ -1500,7 +1601,9 @@ private fun CarPlayerScreen(
     playerVm: PlayerViewModel,
     onBack: () -> Unit,
     onOpenLibrary: () -> Unit,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    onOpenSources: () -> Unit = {},
+    onOpenSound: () -> Unit = {}
 ) {
     val m = LocalCarMetrics.current
     val state by playerVm.state.collectAsStateWithLifecycle()
@@ -1528,11 +1631,8 @@ private fun CarPlayerScreen(
     var showLyrics by remember { mutableStateOf(false) }
     val lyricsListState = rememberLazyListState()
     val currentLine = lyrics?.indexAt(state.positionMs) ?: -1
-    LaunchedEffect(currentLine, tab) {
-        if (tab == PlayerTab.LYRICS && currentLine >= 0) {
-            lyricsListState.animateScrollToItem((currentLine - 1).coerceAtLeast(0))
-        }
-    }
+    // 歌词常驻显示，始终自动跟随
+    rememberLyricsAutoFollow(lyricsListState, currentLine, true)
 
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().background(backdrop).statusBarsPadding()) {
@@ -1541,48 +1641,26 @@ private fun CarPlayerScreen(
                 Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onBack, modifier = Modifier.size(m.touchTarget)) {
-                    Icon(
-                        Icons.Default.KeyboardArrowDown,
-                        contentDescription = "收起",
-                        tint = fg,
-                        modifier = Modifier.size(m.touchTarget * 0.48f)
-                    )
-                }
-                Row(
-                    Modifier.weight(1f),
-                    horizontalArrangement = Arrangement.spacedBy(20.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    PlayerTab.values().forEach { item ->
-                        TabLabel(item.label, tab == item) { tab = item }
-                    }
-                    TabLabel("音乐列表", false) { onOpenLibrary() }
-                }
-                IconButton(
-                    onClick = { searchMode = true },
-                    modifier = Modifier.size(m.touchTarget)
-                ) {
-                    Icon(
-                        Icons.Default.Search,
-                        contentDescription = "搜索",
-                        tint = fg.copy(alpha = 0.85f),
-                        modifier = Modifier.size(m.touchTarget * 0.42f)
-                    )
-                }
+                // 横屏顶栏统一为文字按钮，按使用频率从左到右：
+                // 音乐列表（最常用）→ 搜索 → 网络音源 → 音效（用户指定放搜索之后）→ 更多（溢出菜单固定最右）
+                TopTextButton("音乐列表", { onOpenLibrary() }, minHeight = m.touchTarget, color = fg)
+                Spacer(Modifier.weight(1f))
+                TopTextButton("搜索", { searchMode = true }, minHeight = m.touchTarget, color = fg)
+                TopTextButton("网络音源", onOpenSources, minHeight = m.touchTarget, color = fg)
+                TopTextButton("音效", onOpenSound, minHeight = m.touchTarget, color = fg)
                 Box {
-                    IconButton(
-                        onClick = { showMore = true },
-                        modifier = Modifier.size(m.touchTarget)
-                    ) {
-                        Icon(
-                            Icons.Default.MoreVert,
-                            contentDescription = "更多操作",
-                            tint = fg.copy(alpha = 0.85f),
-                            modifier = Modifier.size(m.touchTarget * 0.42f)
-                        )
-                    }
+                    TopTextButton("更多", { showMore = true }, minHeight = m.touchTarget, color = fg)
                     DropdownMenu(expanded = showMore, onDismissRequest = { showMore = false }) {
+                        DropdownMenuItem(
+                            text = { Text("音效设置") },
+                            leadingIcon = { Icon(Icons.Default.GraphicEq, contentDescription = null) },
+                            onClick = { showMore = false; onOpenSound() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("网络音乐源") },
+                            leadingIcon = { Icon(Icons.Default.Cloud, contentDescription = null) },
+                            onClick = { showMore = false; onOpenSources() }
+                        )
                         DropdownMenuItem(
                             text = { Text("设置") },
                             leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },
@@ -1782,21 +1860,18 @@ private fun CarPlayerScreen(
                                 }
                             }
 
+                            // 歌词与封面已同屏分区展示，歌词区常驻完整逐行高亮
                             Box(
                                 Modifier
                                     .weight(1f)
                                     .fillMaxWidth()
-                                    .lyricsFade()
-                                    .clickable {
-                                        tab = if (tab == PlayerTab.COVER) PlayerTab.LYRICS
-                                        else PlayerTab.COVER
-                                    },
+                                    .lyricsFade(),
                                 contentAlignment = Alignment.TopCenter
                             ) {
                                 CarLyricsContent(
                                     lyrics = lyrics,
                                     currentLine = currentLine,
-                                    tab = tab,
+                                    tab = PlayerTab.LYRICS,
                                     fg = fg,
                                     m = m,
                                     listState = lyricsListState
@@ -2056,12 +2131,13 @@ private fun CarPlayerScreen(
                 text = {
                     // 车机横屏可用高度常只有 320~380dp，队列区收窄避免弹窗溢出屏幕
                     LazyColumn(Modifier.heightIn(max = if (m.enabled) 150.dp else 220.dp)) {
-                        items(state.queue, key = { it.id }) { item ->
+                        itemsIndexed(state.queue, key = { index, item -> "${item.id}-$index" }) { index, item ->
                             Row(
                                 Modifier
                                     .fillMaxWidth()
                                     .clickable {
-                                        playerVm.playSongs(state.queue, state.queue.indexOf(item))
+                                        // 同上：重复曲目用 index 定位，避免重复 key 崩溃
+                                        playerVm.playSongs(state.queue, index)
                                         showQueue = false
                                     }
                                     .padding(vertical = 8.dp, horizontal = 4.dp),
@@ -2264,6 +2340,85 @@ private fun CarLyricsContent(
                         scaleY = lineScale
                     }
             )
+        }
+    }
+}
+
+/**
+ * 竖屏「封面 + 歌词整合视图」的下半部分：滚动歌词，当前行高亮放大。
+ * 与纯歌词页共用同一套动画参数，保证观感一致。
+ */
+@Composable
+private fun CombinedLyrics(
+    lyrics: Lyrics?,
+    currentLine: Int,
+    listState: LazyListState,
+    foreground: androidx.compose.ui.graphics.Color
+) {
+    val current = lyrics
+    when {
+        current == null -> Box(
+            Modifier.fillMaxSize(),
+            contentAlignment = Alignment.TopCenter
+        ) {
+            Text(
+                "暂无歌词 · 可在右上角菜单下载歌词",
+                style = MaterialTheme.typography.bodyMedium,
+                color = foreground.copy(alpha = 0.68f),
+                modifier = Modifier.padding(top = 12.dp)
+            )
+        }
+        !current.synced -> Column(
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            current.lines.forEach { line ->
+                Text(
+                    line.text,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = foreground.copy(alpha = 0.82f),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp)
+                )
+            }
+        }
+        else -> LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(top = 4.dp, bottom = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            itemsIndexed(current.lines) { index, line ->
+                val active = index == currentLine
+                val lineColor by animateColorAsState(
+                    targetValue = if (active) MaterialTheme.colorScheme.primary
+                    else foreground.copy(alpha = 0.66f),
+                    animationSpec = tween(430)
+                )
+                val lineAlpha by animateFloatAsState(if (active) 1f else 0.86f, tween(430))
+                val lineScale by animateFloatAsState(
+                    if (active) 1.06f else 1f,
+                    spring(dampingRatio = 0.75f, stiffness = 380f)
+                )
+                Text(
+                    line.text,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                    color = lineColor,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 7.dp)
+                        .graphicsLayer {
+                            alpha = lineAlpha
+                            scaleX = lineScale
+                            scaleY = lineScale
+                        }
+                )
+            }
         }
     }
 }

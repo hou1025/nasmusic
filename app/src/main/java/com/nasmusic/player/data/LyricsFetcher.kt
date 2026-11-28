@@ -4,6 +4,8 @@ import android.content.Context
 import android.net.Uri
 import com.nasmusic.player.core.extensionOf
 import com.nasmusic.player.core.isAudioFile
+import com.nasmusic.player.core.suspendCatching
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -123,7 +125,12 @@ class LyricsFetcher {
         val channel = Channel<List<LyricCandidate>>(sources.size)
         val jobs = sources.map { source ->
             launch {
-                channel.send(searchOne(source, query, artist, allowBreaker = sources.size > 1))
+                val list = searchOne(source, query, artist, allowBreaker = sources.size > 1)
+                try {
+                    channel.send(list)
+                } catch (_: CancellationException) {
+                    // 超时取消是正常控制流，不再冒泡
+                }
             }
         }
         // acc 提到超时块外：超时只应停止"继续等待剩余源"，不能丢掉已经收到的候选，
@@ -139,7 +146,8 @@ class LyricsFetcher {
             }
         }
         val collected = acc
-        jobs.forEach { runCatching { it.cancel() } }
+        // 先取消生产者再关闭 channel：避免仍在 send 的协程抛 ClosedSendChannelException 冒泡
+        jobs.forEach { it.cancel() }
         channel.close()
 
         val result = normalize(collected, query, artist, durationSec)
@@ -170,7 +178,7 @@ class LyricsFetcher {
             val target = candidates.firstOrNull {
                 it.source == LyricsSource.NETEASE && it.lrc.isNullOrBlank()
             } ?: return@withContext candidates
-            val text = runCatching { fetch(target) }.getOrNull()
+            val text = suspendCatching { fetch(target) }.getOrNull()
                 ?: return@withContext candidates
             candidates.map { if (it.key == target.key) it.copy(lrc = text) else it }
         }
@@ -211,6 +219,9 @@ class LyricsFetcher {
             else searchNetease(query, artist)
             failedUntil.remove(source)
             list
+        } catch (e: CancellationException) {
+            // 取消绝不能被计入失败熔断，否则切歌取消会误伤后续搜索
+            throw e
         } catch (_: Exception) {
             if (allowBreaker) failedUntil[source] = System.currentTimeMillis() + BREAKER_MS
             emptyList()

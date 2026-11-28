@@ -16,6 +16,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
@@ -61,16 +62,22 @@ fun NasSourcesSection(
     vm: MainViewModel,
     nav: NavController,
     onFnosLogin: ((String) -> Unit)? = null,
+    onOnlineLogin: ((String) -> Unit)? = null,
     onBrowse: ((String, String) -> Unit)? = null
 ) {
     val sources by vm.nasSources.collectAsStateWithLifecycle()
     val progress by vm.scanProgress.collectAsStateWithLifecycle()
     var showAdd by remember { mutableStateOf(false) }
     var editTarget by remember { mutableStateOf<NasSource?>(null) }
+    var deleteTarget by remember { mutableStateOf<NasSource?>(null) }
     // 传入内嵌回调时走右栏子页面（左侧播放卡片常驻）；否则保持原整页导航
     val goFnosLogin: (String) -> Unit = { id ->
         if (onFnosLogin != null) onFnosLogin(id)
         else nav.navigate("fnosLogin?sourceId=${Uri.encode(id)}")
+    }
+    val goOnlineLogin: (String) -> Unit = { id ->
+        if (onOnlineLogin != null) onOnlineLogin(id)
+        else nav.navigate("onlineSourceLogin?sourceId=${Uri.encode(id)}")
     }
     val goBrowse: (String, String) -> Unit = { id, path ->
         if (onBrowse != null) onBrowse(id, path)
@@ -91,6 +98,10 @@ fun NasSourcesSection(
             TextButton(onClick = { goFnosLogin("") }) {
                 Icon(Icons.Default.MusicNote, contentDescription = null, modifier = Modifier.size(18.dp))
                 Text(" 飞牛登录")
+            }
+            TextButton(onClick = { goOnlineLogin("") }) {
+                Icon(Icons.Default.Cloud, contentDescription = null, modifier = Modifier.size(18.dp))
+                Text(" 在线音乐源")
             }
             TextButton(onClick = { showAdd = true }) {
                 Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -122,7 +133,7 @@ fun NasSourcesSection(
         }
 
         if (sources.isEmpty()) {
-            InfoText("还没有网络音乐源。点击「添加网络源」接入 SMB/CIFS / WebDAV，或用「飞牛登录」直接接入飞牛音乐曲库。")
+            InfoText("还没有网络音乐源。点击「添加网络源」接入 SMB/CIFS / WebDAV，用「飞牛登录」接入飞牛曲库，或用「在线音乐源」接入 Navidrome 等 Subsonic 兼容服务。")
         } else {
             sources.forEach { source ->
                 NasSourceCard(
@@ -130,14 +141,13 @@ fun NasSourcesSection(
                     onScan = { vm.scanNasSource(source) },
                     onBrowse = { goBrowse(source.id, source.rootPath) },
                     onEdit = {
-                        if (source.type == SourceType.FNOS) {
-                            goFnosLogin(source.id)
-                        } else editTarget = source
+                        when (source.type) {
+                            SourceType.FNOS -> goFnosLogin(source.id)
+                            SourceType.ONLINE -> goOnlineLogin(source.id)
+                            else -> editTarget = source
+                        }
                     },
-                    onDelete = {
-                        if (source.type == SourceType.FNOS) FnosSession.remove(source.id)
-                        vm.deleteNasSource(source.id)
-                    }
+                    onDelete = { deleteTarget = source }
                 )
             }
         }
@@ -148,6 +158,26 @@ fun NasSourcesSection(
             vm = vm,
             initial = editTarget,
             onDismiss = { showAdd = false; editTarget = null }
+        )
+    }
+    deleteTarget?.let { source ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("删除音乐源") },
+            text = {
+                Text(
+                    "确定删除「${source.name}」？该音源的整库歌曲会一并从曲库中移除，" +
+                        "正在播放的曲目也会停止。手机 / NAS 上的原文件不会被删除。"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (source.type == SourceType.FNOS) FnosSession.remove(source.id)
+                    vm.deleteNasSource(source.id)
+                    deleteTarget = null
+                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } }
         )
     }
 }
@@ -168,6 +198,7 @@ private fun NasSourceCard(
                     SourceType.SMB -> "SMB/CIFS · ${source.host}:${source.port}/${source.share}"
                     SourceType.WEBDAV -> "WebDAV · ${source.baseUrl}"
                     SourceType.FNOS -> "飞牛音乐 · ${source.baseUrl} · ${source.username}"
+                    SourceType.ONLINE -> "在线音乐源 · ${source.baseUrl} · ${source.username}"
                     SourceType.LOCAL -> "本地"
                 },
                 style = MaterialTheme.typography.bodySmall,

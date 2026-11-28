@@ -4,6 +4,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -50,7 +51,7 @@ fun SongOptionsMenu(
             )
             DropdownMenuItem(
                 text = { Text("下一首播放") },
-                onClick = { playerVm.addToQueue(listOf(song)); expanded = false }
+                onClick = { playerVm.playNext(listOf(song)); expanded = false }
             )
             DropdownMenuItem(
                 text = { Text("加入播放列表…") },
@@ -74,7 +75,7 @@ fun AddToPlaylistDialog(vm: MainViewModel, songIds: List<String>, onDismiss: () 
             if (playlists.isEmpty()) {
                 Text("暂无播放列表，可直接新建一个")
             } else {
-                LazyColumn {
+                LazyColumn(Modifier.heightIn(max = 320.dp)) {
                     items(playlists, key = { it.id }) { playlist ->
                         TextButton(
                             modifier = Modifier.fillMaxWidth(),
@@ -162,7 +163,7 @@ fun AddSongsDialog(vm: MainViewModel, playlistId: String, onDismiss: () -> Unit)
         onDismissRequest = onDismiss,
         title = { Text("添加歌曲（${selected.size}）") },
         text = {
-            LazyColumn {
+            LazyColumn(Modifier.heightIn(max = 320.dp)) {
                 items(all, key = { it.id }) { song ->
                     Row(
                         modifier = Modifier.fillMaxWidth().clickable {

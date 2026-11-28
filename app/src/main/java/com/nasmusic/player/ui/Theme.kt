@@ -313,8 +313,16 @@ private fun SyncSystemBars(dark: Boolean, statusColor: Color, navColor: Color) {
     if (view.isInEditMode) return
     SideEffect {
         val window = (view.context as? Activity)?.window ?: return@SideEffect
-        window.statusBarColor = statusColor.toArgb()
-        window.navigationBarColor = navColor.toArgb()
+        // targetSdk 35 起系统强制 edge-to-edge，statusBarColor/navigationBarColor 已废弃且被忽略。
+        // 35+ 只通过 WindowInsetsControllerCompat 控制图标明暗，系统栏区域由各页面已有的
+        // statusBarsPadding / navigationBarsPadding 处理；35 以下仍设置颜色兼容旧系统，
+        // 避免在尚未做全局 insets 改造前出现内容顶到状态栏下的问题。
+        if (Build.VERSION.SDK_INT < 35) {
+            @Suppress("DEPRECATION")
+            window.statusBarColor = statusColor.toArgb()
+            @Suppress("DEPRECATION")
+            window.navigationBarColor = navColor.toArgb()
+        }
         val controller = WindowInsetsControllerCompat(window, view)
         controller.isAppearanceLightStatusBars = !dark
         controller.isAppearanceLightNavigationBars = !dark

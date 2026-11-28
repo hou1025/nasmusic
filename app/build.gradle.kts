@@ -12,8 +12,8 @@ android {
         applicationId = "com.nasmusic.player"
         minSdk = 24
         targetSdk = 35
-        versionCode = 35
-        versionName = "2.1.2"
+        versionCode = 46
+        versionName = "2.3.9"
     }
 
     buildTypes {
@@ -31,6 +31,12 @@ android {
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
     composeOptions { kotlinCompilerExtensionVersion = libs.versions.composeCompiler.get() }
+
+    // 让 Room 把每版 schema 落到 app/schemas/，纳入版本管理以支持迁移校验与回溯。
+    ksp {
+        arg("room.schemaLocation", "$projectDir/schemas")
+        arg("room.incremental", "true")
+    }
 
     packaging {
         resources {
